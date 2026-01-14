@@ -1,0 +1,15 @@
+# Komorebi Settings
+
+# Project tracking
+projects:
+  layerwise:
+    path: ~/projects/layerwise
+    active: true
+
+# Data directory (relative to project root)
+data_dir: ./data
+
+# Google Calendar
+calendar:
+  enabled: true
+  default_calendar: primary
