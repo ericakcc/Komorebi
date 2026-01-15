@@ -2,11 +2,12 @@
 
 學習重點：
 - 使用 click 建立 CLI 命令
-- 使用 rich 美化輸出
-- asyncio.run() 執行 async 函數
+- 使用 Textual 實現 TUI 介面
+- 保留 --classic 選項用於舊版 REPL
 
 Usage:
-    komorebi              # Start interactive session
+    komorebi              # Start TUI interface
+    komorebi --classic    # Start classic REPL
     komorebi --help       # Show help
 """
 
@@ -18,7 +19,15 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
 
-from .agent import KomorebiAgent
+from .agent import (
+    DoneEvent,
+    KomorebiAgent,
+    TextEvent,
+    ToolEndEvent,
+    ToolStartEvent,
+    format_tool_name,
+)
+from .ui import KomorebiApp
 
 console = Console()
 
@@ -73,18 +82,41 @@ async def run_repl(config_path: Path, model: str, max_budget: float | None) -> N
                 if not user_input.strip():
                     continue
 
-                # Eval & Print: 發送給 Claude 並串流顯示回應
+                # Eval & Print: 發送給 Claude 並處理結構化事件
                 console.print("[blue]Komorebi[/blue]: ", end="")
-                has_output = False
+                has_text = False
 
-                async for chunk in agent.chat(user_input):
-                    has_output = True
-                    # 串流輸出每個 chunk
-                    console.print(chunk, end="")
+                async for event in agent.chat(user_input):
+                    if isinstance(event, TextEvent):
+                        # 串流輸出文字
+                        console.print(event.text, end="")
+                        has_text = True
 
-                # 確保換行
-                if has_output:
-                    console.print()  # 換行
+                    elif isinstance(event, ToolStartEvent):
+                        # 工具開始執行
+                        if has_text:
+                            console.print()  # 換行
+                            has_text = False
+                        tool_display = format_tool_name(event.tool_name)
+                        console.print(f"  [dim]→ {tool_display}[/dim]", end="")
+
+                    elif isinstance(event, ToolEndEvent):
+                        # 工具執行完成
+                        if event.is_error:
+                            console.print(" [red]✗[/red]")
+                        else:
+                            console.print(" [green]✓[/green]")
+
+                    elif isinstance(event, DoneEvent):
+                        # 對話完成，顯示統計
+                        if has_text:
+                            console.print()  # 換行
+                        console.print(
+                            f"[dim]💰 ${event.cost_usd:.4f} | "
+                            f"📥 {event.input_tokens:,} | "
+                            f"📤 {event.output_tokens:,}[/dim]"
+                        )
+
                 console.print()  # 空行分隔
 
             except KeyboardInterrupt:
@@ -115,14 +147,21 @@ async def run_repl(config_path: Path, model: str, max_budget: float | None) -> N
     type=float,
     help="預算上限（美元），例如 --budget 1.0",
 )
-def cli(config: str, model: str, budget: float | None) -> None:
+@click.option(
+    "--classic",
+    is_flag=True,
+    default=False,
+    help="使用傳統 REPL 介面（非 TUI）",
+)
+def cli(config: str, model: str, budget: float | None, classic: bool) -> None:
     """Komorebi - Personal AI Assistant.
 
     啟動互動式對話介面，協助管理專案與規劃工作。
 
     \b
     快速開始：
-        komorebi                    # 使用預設設定 (sonnet)
+        komorebi                    # 使用 TUI 介面 (預設)
+        komorebi --classic          # 使用傳統 REPL 介面
         komorebi -m haiku           # 用便宜快速的 haiku
         komorebi -m opus            # 用最強的 opus
         komorebi --budget 0.5       # 設定預算上限 $0.5
@@ -131,8 +170,17 @@ def cli(config: str, model: str, budget: float | None) -> None:
     if not config_path.exists():
         console.print(f"[yellow]提示：設定檔 {config} 不存在，使用預設值[/yellow]\n")
 
-    # asyncio.run() 是執行 async 函數的標準方式
-    asyncio.run(run_repl(config_path, model, budget))
+    if classic:
+        # 傳統 REPL 模式
+        asyncio.run(run_repl(config_path, model, budget))
+    else:
+        # TUI 模式
+        app = KomorebiApp(
+            config_path=config_path,
+            model=model,
+            max_budget=budget,
+        )
+        app.run()
 
 
 if __name__ == "__main__":

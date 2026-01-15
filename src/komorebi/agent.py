@@ -12,10 +12,9 @@
 - ClaudeSDKClient: 多輪對話，記住上下文，適合互動式應用
 """
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncIterator
-
-from typing import Any
+from typing import Any, AsyncIterator
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -27,15 +26,82 @@ from claude_agent_sdk import (
     SystemMessage,
     TextBlock,
     ToolPermissionContext,
+    ToolResultBlock,
     ToolUseBlock,
     create_sdk_mcp_server,
 )
+from rich.console import Console
+from rich.prompt import Confirm
 
 from .config import Config, load_config
 from .tools import calendar, planning, project
 
 # Komorebi 專案根目錄
 _KOMOREBI_ROOT = Path(__file__).parent.parent.parent.resolve()
+
+# Console for tool confirmation prompts
+_console = Console()
+
+
+# ============================================================================
+# Chat Event Types
+# ============================================================================
+
+
+@dataclass
+class TextEvent:
+    """文字輸出事件"""
+
+    text: str
+
+
+@dataclass
+class ToolStartEvent:
+    """工具開始執行事件"""
+
+    tool_id: str
+    tool_name: str
+    tool_input: dict[str, Any]
+
+
+@dataclass
+class ToolEndEvent:
+    """工具執行完成事件"""
+
+    tool_id: str
+    result: str
+    is_error: bool
+
+
+@dataclass
+class DoneEvent:
+    """對話完成事件"""
+
+    cost_usd: float
+    input_tokens: int
+    output_tokens: int
+
+
+ChatEvent = TextEvent | ToolStartEvent | ToolEndEvent | DoneEvent
+
+
+def format_tool_name(tool_name: str) -> str:
+    """格式化工具名稱：mcp__project__list_projects → list_projects"""
+    if tool_name.startswith("mcp__"):
+        parts = tool_name.split("__")
+        return parts[-1] if len(parts) >= 3 else tool_name
+    return tool_name
+
+
+# 需要確認的工具（寫入操作）
+_CONFIRM_TOOLS = {
+    "mcp__project__update_project_status",
+    "mcp__project__update_project_progress",
+    "mcp__project__sync_project",
+    "mcp__planning__plan_today",
+    "mcp__planning__end_of_day",
+    "mcp__calendar__add_event",
+}
 
 
 async def _check_tool_permission(
@@ -56,8 +122,27 @@ async def _check_tool_permission(
     Returns:
         允許或拒絕的結果
     """
-    # MCP 工具直接允許（已有白名單控制）
+    # MCP 工具：需要確認的工具先詢問用戶
     if tool_name.startswith("mcp__"):
+        if tool_name in _CONFIRM_TOOLS:
+            # 顯示工具資訊
+            tool_display = format_tool_name(tool_name)
+            _console.print(f"\n[yellow]要執行 {tool_display} 嗎？[/yellow]")
+
+            # 顯示參數
+            for key, value in input.items():
+                value_str = str(value)[:80]
+                if len(str(value)) > 80:
+                    value_str += "..."
+                _console.print(f"  [dim]{key}:[/dim] {value_str}")
+
+            # 詢問確認
+            if not Confirm.ask("確認執行", default=True):
+                return PermissionResultDeny(
+                    behavior="deny",
+                    message="用戶取消執行",
+                )
+
         return PermissionResultAllow(behavior="allow")
 
     # Bash 指令檢查
@@ -312,8 +397,8 @@ class KomorebiAgent:
             await self._client.disconnect()
             self._client = None
 
-    async def chat(self, message: str) -> AsyncIterator[str]:
-        """Send a message and yield response text.
+    async def chat(self, message: str) -> AsyncIterator[ChatEvent]:
+        """Send a message and yield structured events.
 
         這是主要的對話介面。使用 query() 發送訊息，
         然後用 receive_response() 接收回應。
@@ -325,7 +410,7 @@ class KomorebiAgent:
             message: User message to send.
 
         Yields:
-            Response text chunks as they arrive.
+            ChatEvent: 結構化事件（TextEvent, ToolStartEvent, ToolEndEvent, DoneEvent）
 
         Raises:
             RuntimeError: If agent is not connected (not in async with context).
@@ -346,14 +431,26 @@ class KomorebiAgent:
             if isinstance(msg, AssistantMessage):
                 for block in msg.content:
                     if isinstance(block, TextBlock):
-                        yield block.text
+                        yield TextEvent(text=block.text)
                     elif isinstance(block, ToolUseBlock):
-                        # 階段三會實作工具呼叫
-                        yield f"\n[使用工具: {block.name}]\n"
+                        yield ToolStartEvent(
+                            tool_id=block.id,
+                            tool_name=block.name,
+                            tool_input=block.input,
+                        )
+                    elif isinstance(block, ToolResultBlock):
+                        yield ToolEndEvent(
+                            tool_id=block.tool_use_id,
+                            result=str(block.content)[:200] if block.content else "",
+                            is_error=block.is_error or False,
+                        )
 
             # ResultMessage: 最終結果，包含統計資訊
             if isinstance(msg, ResultMessage):
                 # 更新使用量統計
                 self.usage.update(msg)
-                if msg.is_error:
-                    yield f"\n[錯誤: {msg.result}]\n"
+                yield DoneEvent(
+                    cost_usd=msg.total_cost_usd or 0,
+                    input_tokens=msg.usage.get("input_tokens", 0) if msg.usage else 0,
+                    output_tokens=msg.usage.get("output_tokens", 0) if msg.usage else 0,
+                )

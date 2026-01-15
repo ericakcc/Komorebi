@@ -1,0 +1,409 @@
+"""Chat screen for Komorebi TUI.
+
+Main conversation interface with message history, input, and status bar.
+"""
+
+from typing import TYPE_CHECKING
+
+from textual.app import ComposeResult
+from textual.containers import VerticalScroll
+from textual.screen import Screen
+from textual.widgets import Footer, Header, Static
+
+from ..commands import handle_command, is_command
+from ..widgets import ChatInput, CommandPalette, MessageView, ThinkingIndicator, ToolPanel
+from ...agent import (
+    DoneEvent,
+    KomorebiAgent,
+    TextEvent,
+    ToolEndEvent,
+    ToolStartEvent,
+    format_tool_name,
+)
+
+if TYPE_CHECKING:
+    from ..app import KomorebiApp
+
+
+class StatusBar(Static):
+    """Bottom status bar showing token statistics."""
+
+    DEFAULT_CSS = """
+    StatusBar {
+        dock: bottom;
+        height: 1;
+        background: $surface-darken-2;
+        color: $text-muted;
+        padding: 0 1;
+    }
+    """
+
+    def __init__(self) -> None:
+        """Initialize status bar."""
+        super().__init__()
+        self._cost: float = 0.0
+        self._input_tokens: int = 0
+        self._output_tokens: int = 0
+
+    def update_stats(self, cost: float, input_tokens: int, output_tokens: int) -> None:
+        """Update statistics display.
+
+        Args:
+            cost: Total cost in USD.
+            input_tokens: Total input tokens.
+            output_tokens: Total output tokens.
+        """
+        self._cost += cost
+        self._input_tokens += input_tokens
+        self._output_tokens += output_tokens
+        self._refresh_display()
+
+    def _refresh_display(self) -> None:
+        """Refresh the status bar text."""
+        self.update(
+            f" ${self._cost:.4f} | "
+            f" {self._input_tokens:,} | "
+            f" {self._output_tokens:,} | "
+            "/help for commands"
+        )
+
+
+class ChatScreen(Screen):
+    """Main chat screen.
+
+    Contains:
+    - Header with app title
+    - Scrollable message container
+    - Input field
+    - Status bar with token statistics
+    """
+
+    DEFAULT_CSS = """
+    ChatScreen {
+        layout: vertical;
+    }
+
+    #chat-container {
+        height: 1fr;
+        padding: 1;
+        scrollbar-gutter: stable;
+    }
+
+    #chat-input {
+        dock: bottom;
+        height: auto;
+        max-height: 8;
+        min-height: 3;
+        margin: 0 1 1 1;
+    }
+
+    .message-container {
+        margin-bottom: 1;
+    }
+    """
+
+    def __init__(self) -> None:
+        """Initialize chat screen."""
+        super().__init__()
+        self._agent: KomorebiAgent | None = None
+        self._current_message: MessageView | None = None
+        self._current_tool_panel: ToolPanel | None = None
+
+    @property
+    def komorebi_app(self) -> "KomorebiApp":
+        """Get the app instance."""
+        from ..app import KomorebiApp
+
+        app = self.app
+        if not isinstance(app, KomorebiApp):
+            raise RuntimeError("Invalid app type")
+        return app
+
+    def compose(self) -> ComposeResult:
+        """Compose the screen layout."""
+        yield Header()
+        yield VerticalScroll(id="chat-container")
+        yield CommandPalette()
+        yield ChatInput(id="chat-input")
+        yield StatusBar()
+        yield Footer()
+
+    async def on_mount(self) -> None:
+        """Called when screen is mounted."""
+        # Initialize agent
+        app = self.komorebi_app
+        self._agent = KomorebiAgent(
+            config_path=app.config_path,
+            model=app.model,
+            max_budget_usd=app.max_budget,
+        )
+        # Enter async context
+        await self._agent.__aenter__()
+
+        # Focus input
+        self.query_one("#chat-input", ChatInput).focus()
+
+        # Welcome message
+        self._add_system_message(
+            f"Komorebi v0.1.0 | Model: {app.model}\nType /help for available commands."
+        )
+
+    async def on_unmount(self) -> None:
+        """Called when screen is unmounted."""
+        if self._agent:
+            await self._agent.__aexit__(None, None, None)
+            self._agent = None
+
+    def on_chat_input_slash_typed(self, event: ChatInput.SlashTyped) -> None:
+        """Handle slash command typing.
+
+        Args:
+            event: The slash typed event.
+        """
+        palette = self.query_one(CommandPalette)
+        chat_input = self.query_one("#chat-input", ChatInput)
+
+        # Update filter and show if not already visible
+        if not palette.is_visible:
+            palette.show(event.text)
+            chat_input.palette_visible = True
+        else:
+            # Just update filter text
+            palette.filter_text = event.text
+            palette._update_options()
+
+    def on_chat_input_slash_cleared(self, event: ChatInput.SlashCleared) -> None:
+        """Handle slash command cleared."""
+        palette = self.query_one(CommandPalette)
+        chat_input = self.query_one("#chat-input", ChatInput)
+
+        palette.hide()
+        chat_input.palette_visible = False
+
+    def on_command_palette_command_selected(self, event: CommandPalette.CommandSelected) -> None:
+        """Handle command selection from palette.
+
+        Args:
+            event: The command selected event.
+        """
+        chat_input = self.query_one("#chat-input", ChatInput)
+        palette = self.query_one(CommandPalette)
+
+        # Set the selected command in input
+        chat_input.set_text(event.command + " ")
+        chat_input.palette_visible = False
+        palette.hide()
+        chat_input.focus()
+
+    def key_up(self, event) -> None:
+        """Handle up key for command palette navigation."""
+        chat_input = self.query_one("#chat-input", ChatInput)
+        if chat_input.palette_visible:
+            palette = self.query_one(CommandPalette)
+            palette.move_up()
+            event.stop()
+            event.prevent_default()
+
+    def key_down(self, event) -> None:
+        """Handle down key for command palette navigation."""
+        chat_input = self.query_one("#chat-input", ChatInput)
+        if chat_input.palette_visible:
+            palette = self.query_one(CommandPalette)
+            palette.move_down()
+            event.stop()
+            event.prevent_default()
+
+    def key_escape(self, event) -> None:
+        """Handle escape key to hide command palette."""
+        chat_input = self.query_one("#chat-input", ChatInput)
+        if chat_input.palette_visible:
+            palette = self.query_one(CommandPalette)
+            palette.hide()
+            chat_input.palette_visible = False
+            event.stop()
+            event.prevent_default()
+
+    def key_enter(self, event) -> None:
+        """Handle enter key to select from command palette."""
+        chat_input = self.query_one("#chat-input", ChatInput)
+        if chat_input.palette_visible:
+            palette = self.query_one(CommandPalette)
+            palette.select_highlighted()
+            event.stop()
+            event.prevent_default()
+
+    async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
+        """Handle user input submission.
+
+        Args:
+            event: The submitted event with message content.
+        """
+        message = event.value.strip()
+        if not message:
+            return
+
+        # Hide palette if visible
+        palette = self.query_one(CommandPalette)
+        chat_input = self.query_one("#chat-input", ChatInput)
+        if palette.is_visible:
+            palette.hide()
+            chat_input.palette_visible = False
+
+        # Clear input
+        chat_input.clear()
+
+        # Check for slash commands
+        if is_command(message):
+            await handle_command(self, message)
+            return
+
+        # Add user message to chat
+        self._add_user_message(message)
+
+        # Run chat processing in background worker to keep UI responsive
+        self.run_worker(self._process_chat(message), exclusive=True)
+
+    async def _process_chat(self, message: str) -> None:
+        """Process a chat message through the agent.
+
+        Args:
+            message: User message to send.
+        """
+        if not self._agent:
+            return
+
+        container = self.query_one("#chat-container")
+
+        # Show thinking indicator
+        thinking = ThinkingIndicator()
+        await container.mount(thinking)
+        container.scroll_end(animate=False)
+
+        # Track if we've received first response
+        first_response = True
+
+        try:
+            async for event in self._agent.chat(message):
+                # Remove thinking indicator on first response
+                if first_response:
+                    first_response = False
+                    await thinking.remove()
+                    # Create assistant message container
+                    self._current_message = self._add_assistant_message()
+
+                if isinstance(event, TextEvent):
+                    # Append text to current message
+                    if self._current_message:
+                        self._current_message.append_text(event.text)
+                        # Scroll to show new content
+                        container.scroll_end(animate=False)
+
+                elif isinstance(event, ToolStartEvent):
+                    # Add tool panel
+                    tool_name = format_tool_name(event.tool_name)
+                    self._current_tool_panel = ToolPanel(
+                        tool_name=tool_name,
+                        tool_input=event.tool_input,
+                    )
+                    await container.mount(self._current_tool_panel)
+                    container.scroll_end(animate=False)
+
+                elif isinstance(event, ToolEndEvent):
+                    # Update tool panel status
+                    if self._current_tool_panel:
+                        self._current_tool_panel.set_result(event.result, event.is_error)
+                        self._current_tool_panel = None
+
+                elif isinstance(event, DoneEvent):
+                    # Update status bar
+                    status_bar = self.query_one(StatusBar)
+                    status_bar.update_stats(
+                        event.cost_usd,
+                        event.input_tokens,
+                        event.output_tokens,
+                    )
+
+        except Exception as e:
+            # Remove thinking indicator if still present
+            if first_response:
+                await thinking.remove()
+            self._add_error_message(str(e))
+
+        finally:
+            self._current_message = None
+            # Scroll to bottom
+            container.scroll_end(animate=False)
+
+    def _add_user_message(self, content: str) -> MessageView:
+        """Add a user message to the chat.
+
+        Args:
+            content: Message content.
+
+        Returns:
+            The created MessageView widget.
+        """
+        msg = MessageView(role="user", content=content)
+        container = self.query_one("#chat-container")
+        container.mount(msg)
+        container.scroll_end(animate=False)
+        return msg
+
+    def _add_assistant_message(self, content: str = "") -> MessageView:
+        """Add an assistant message to the chat.
+
+        Args:
+            content: Initial message content.
+
+        Returns:
+            The created MessageView widget.
+        """
+        msg = MessageView(role="assistant", content=content)
+        container = self.query_one("#chat-container")
+        container.mount(msg)
+        container.scroll_end(animate=False)
+        return msg
+
+    def _add_system_message(self, content: str) -> None:
+        """Add a system message to the chat.
+
+        Args:
+            content: Message content.
+        """
+        msg = MessageView(role="system", content=content)
+        container = self.query_one("#chat-container")
+        container.mount(msg)
+
+    def _add_error_message(self, content: str) -> None:
+        """Add an error message to the chat.
+
+        Args:
+            content: Error message content.
+        """
+        msg = MessageView(role="error", content=f"Error: {content}")
+        container = self.query_one("#chat-container")
+        container.mount(msg)
+        container.scroll_end(animate=False)
+
+    def clear_messages(self) -> None:
+        """Clear all messages from the chat."""
+        container = self.query_one("#chat-container")
+        container.remove_children()
+        self._add_system_message("Chat cleared. Type /help for commands.")
+
+    def scroll_up(self) -> None:
+        """Scroll chat container up."""
+        container = self.query_one("#chat-container")
+        # Scroll by 5 lines instead of full page
+        container.scroll_relative(y=-5, animate=False)
+
+    def scroll_down(self) -> None:
+        """Scroll chat container down."""
+        container = self.query_one("#chat-container")
+        # Scroll by 5 lines instead of full page
+        container.scroll_relative(y=5, animate=False)
+
+    def show_usage(self) -> None:
+        """Show API usage statistics."""
+        if self._agent:
+            self._add_system_message(str(self._agent.usage))

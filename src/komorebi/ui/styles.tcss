@@ -1,0 +1,31 @@
+/* Komorebi TUI Styles */
+
+/* Screen base */
+Screen {
+    background: $surface;
+}
+
+/* Header customization */
+Header {
+    dock: top;
+}
+
+/* Footer customization */
+Footer {
+    dock: bottom;
+}
+
+/* Chat container */
+#chat-container {
+    height: 1fr;
+    padding: 1;
+    scrollbar-gutter: stable;
+}
+
+/* Smooth scrolling */
+VerticalScroll {
+    scrollbar-background: $surface-darken-1;
+    scrollbar-color: $primary-darken-2;
+    scrollbar-color-hover: $primary;
+    scrollbar-color-active: $primary-lighten-1;
+}
