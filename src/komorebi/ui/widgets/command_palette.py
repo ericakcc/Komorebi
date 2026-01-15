@@ -34,10 +34,11 @@ class CommandPalette(Vertical):
         dock: bottom;
         height: auto;
         max-height: 12;
-        margin: 0 1;
+        margin: 0 1 5 1;
         background: $surface;
         border: solid $primary;
         display: none;
+        layer: above;
     }
 
     CommandPalette.visible {
@@ -153,13 +154,9 @@ class CommandPalette(Vertical):
     def move_up(self) -> None:
         """Move highlight up."""
         if self._option_list and self._option_list.option_count > 0:
-            current = self._option_list.highlighted or 0
-            new_index = max(0, current - 1)
-            self._option_list.highlighted = new_index
+            self._option_list.action_cursor_up()
 
     def move_down(self) -> None:
         """Move highlight down."""
         if self._option_list and self._option_list.option_count > 0:
-            current = self._option_list.highlighted or 0
-            new_index = min(self._option_list.option_count - 1, current + 1)
-            self._option_list.highlighted = new_index
+            self._option_list.action_cursor_down()

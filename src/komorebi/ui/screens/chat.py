@@ -278,7 +278,7 @@ class ChatScreen(Screen):
         # Show thinking indicator
         thinking = ThinkingIndicator()
         await container.mount(thinking)
-        container.scroll_end(animate=False)
+        self.call_after_refresh(container.scroll_end, animate=False)
 
         # Track if we've received first response
         first_response = True
@@ -297,7 +297,7 @@ class ChatScreen(Screen):
                     if self._current_message:
                         self._current_message.append_text(event.text)
                         # Scroll to show new content
-                        container.scroll_end(animate=False)
+                        self.call_after_refresh(container.scroll_end, animate=False)
 
                 elif isinstance(event, ToolStartEvent):
                     # Add tool panel
@@ -307,7 +307,7 @@ class ChatScreen(Screen):
                         tool_input=event.tool_input,
                     )
                     await container.mount(self._current_tool_panel)
-                    container.scroll_end(animate=False)
+                    self.call_after_refresh(container.scroll_end, animate=False)
 
                 elif isinstance(event, ToolEndEvent):
                     # Update tool panel status
@@ -333,7 +333,7 @@ class ChatScreen(Screen):
         finally:
             self._current_message = None
             # Scroll to bottom
-            container.scroll_end(animate=False)
+            self.call_after_refresh(container.scroll_end, animate=False)
 
     def _add_user_message(self, content: str) -> MessageView:
         """Add a user message to the chat.
@@ -347,7 +347,7 @@ class ChatScreen(Screen):
         msg = MessageView(role="user", content=content)
         container = self.query_one("#chat-container")
         container.mount(msg)
-        container.scroll_end(animate=False)
+        self.call_after_refresh(container.scroll_end, animate=False)
         return msg
 
     def _add_assistant_message(self, content: str = "") -> MessageView:
@@ -362,7 +362,7 @@ class ChatScreen(Screen):
         msg = MessageView(role="assistant", content=content)
         container = self.query_one("#chat-container")
         container.mount(msg)
-        container.scroll_end(animate=False)
+        self.call_after_refresh(container.scroll_end, animate=False)
         return msg
 
     def _add_system_message(self, content: str) -> None:
@@ -384,7 +384,7 @@ class ChatScreen(Screen):
         msg = MessageView(role="error", content=f"Error: {content}")
         container = self.query_one("#chat-container")
         container.mount(msg)
-        container.scroll_end(animate=False)
+        self.call_after_refresh(container.scroll_end, animate=False)
 
     def clear_messages(self) -> None:
         """Clear all messages from the chat."""

@@ -23,42 +23,26 @@ class MessageView(Vertical):
     DEFAULT_CSS = """
     MessageView {
         height: auto;
-        margin-bottom: 1;
-        padding: 1;
-    }
-
-    MessageView.user {
-        background: $primary-darken-3;
-        border-left: thick $primary;
-    }
-
-    MessageView.assistant {
-        background: $surface-darken-1;
-        border-left: thick $secondary;
-    }
-
-    MessageView.system {
-        background: $surface;
-        border-left: thick $warning;
+        margin-bottom: 0;
+        padding: 0 1;
     }
 
     MessageView.error {
-        background: $error-darken-3;
-        border-left: thick $error;
+        color: $error;
     }
 
     MessageView .role-label {
         color: $text-muted;
         text-style: bold;
-        margin-bottom: 1;
+        margin-bottom: 0;
     }
 
     MessageView .role-label.user {
-        color: $primary-lighten-2;
+        color: $primary;
     }
 
     MessageView .role-label.assistant {
-        color: $secondary-lighten-2;
+        color: $secondary;
     }
 
     MessageView .role-label.system {
@@ -71,15 +55,15 @@ class MessageView(Vertical):
 
     MessageView Markdown {
         padding: 0;
-        margin: 0;
+        margin: 0 0 1 2;
     }
     """
 
     ROLE_LABELS = {
-        "user": "You",
-        "assistant": "Komorebi",
-        "system": "System",
-        "error": "Error",
+        "user": "> You",
+        "assistant": "> Komorebi",
+        "system": "> System",
+        "error": "> Error",
     }
 
     def __init__(
@@ -101,7 +85,7 @@ class MessageView(Vertical):
     def compose(self) -> ComposeResult:
         """Compose the message layout."""
         label = self.ROLE_LABELS.get(self._role, self._role)
-        yield Static(f"[{label}]", classes=f"role-label {self._role}")
+        yield Static(label, classes=f"role-label {self._role}")
         self._markdown = Markdown(self._content)
         yield self._markdown
 

@@ -100,15 +100,21 @@ async def _handle_sync(screen: "ChatScreen", args: str) -> None:
         screen._add_error_message("Usage: /sync <project_name>")
         return
 
-    # Convert to natural language and send to agent
-    await screen._process_chat(f"Please sync the {project_name} project information")
+    # Convert to natural language and send to agent (non-blocking)
+    screen._add_user_message(f"/sync {project_name}")
+    screen.run_worker(
+        screen._process_chat(f"Please sync the {project_name} project information"),
+        exclusive=True,
+    )
 
 
 async def _handle_projects(screen: "ChatScreen", args: str) -> None:
     """List all projects."""
-    await screen._process_chat("List all my projects")
+    screen._add_user_message("/projects")
+    screen.run_worker(screen._process_chat("List all my projects"), exclusive=True)
 
 
 async def _handle_today(screen: "ChatScreen", args: str) -> None:
     """Show today's plan."""
-    await screen._process_chat("Show me today's plan")
+    screen._add_user_message("/today")
+    screen.run_worker(screen._process_chat("Show me today's plan"), exclusive=True)

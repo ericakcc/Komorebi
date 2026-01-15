@@ -3,6 +3,7 @@
 Multi-line input with Shift+Enter for newlines and Enter for submit.
 """
 
+from textual import events
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import TextArea
@@ -19,12 +20,24 @@ class ChatInput(TextArea):
 
     DEFAULT_CSS = """
     ChatInput {
-        border: solid $primary;
         padding: 0 1;
     }
 
     ChatInput:focus {
-        border: solid $accent;
+        border-bottom: solid $accent;
+    }
+
+    /* Remove block-like visual effects */
+    ChatInput .text-area--cursor-line {
+        background: transparent;
+    }
+
+    ChatInput .text-area--cursor-gutter {
+        background: transparent;
+    }
+
+    ChatInput .text-area--gutter {
+        background: transparent;
     }
     """
 
@@ -94,7 +107,7 @@ class ChatInput(TextArea):
 
         self._last_text = text
 
-    def _on_key(self, event) -> None:
+    def on_key(self, event: events.Key) -> None:
         """Handle key events.
 
         Args:
@@ -102,6 +115,7 @@ class ChatInput(TextArea):
         """
         if event.key == "enter":
             event.prevent_default()
+            event.stop()
 
             if self.palette_visible:
                 # Notify parent to handle palette selection
@@ -111,9 +125,8 @@ class ChatInput(TextArea):
                 text = self.text.strip()
                 if text:
                     self.post_message(self.Submitted(text))
-            return
 
-        # Shift+Enter falls through to default behavior (newline)
+        # Other keys fall through to default behavior
 
     def clear(self) -> None:
         """Clear the input text."""
