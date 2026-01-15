@@ -24,6 +24,10 @@ class CalendarConfig:
 
     enabled: bool = True
     default_calendar: str = "primary"
+    credentials_path: Path = field(
+        default_factory=lambda: Path("~/.config/komorebi/credentials.json")
+    )
+    token_path: Path = field(default_factory=lambda: Path("~/.config/komorebi/token.json"))
 
 
 @dataclass
@@ -64,6 +68,10 @@ def load_config(config_path: Path) -> Config:
     calendar = CalendarConfig(
         enabled=cal_data.get("enabled", True),
         default_calendar=cal_data.get("default_calendar", "primary"),
+        credentials_path=Path(
+            cal_data.get("credentials_path", "~/.config/komorebi/credentials.json")
+        ),
+        token_path=Path(cal_data.get("token_path", "~/.config/komorebi/token.json")),
     )
 
     # Parse data_dir

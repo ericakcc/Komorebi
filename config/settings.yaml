@@ -13,3 +13,5 @@ data_dir: ./data
 calendar:
   enabled: true
   default_calendar: primary
+  credentials_path: ~/.config/komorebi/credentials.json
+  token_path: ~/.config/komorebi/token.json

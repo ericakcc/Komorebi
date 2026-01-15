@@ -27,7 +27,7 @@ from claude_agent_sdk import (
 )
 
 from .config import Config, load_config
-from .tools import planning, project
+from .tools import calendar, planning, project
 
 
 class UsageStats:
@@ -125,6 +125,16 @@ class KomorebiAgent:
         project.set_data_dir(self.config.data_dir)
         planning.set_data_dir(self.config.data_dir)
 
+        # 設定 calendar 工具
+        if self.config.calendar.enabled:
+            calendar.set_config(
+                {
+                    "credentials_path": str(self.config.calendar.credentials_path.expanduser()),
+                    "token_path": str(self.config.calendar.token_path.expanduser()),
+                    "default_calendar": self.config.calendar.default_calendar,
+                }
+            )
+
         # 建立專案管理 MCP Server
         # create_sdk_mcp_server() 把 @tool 裝飾的函數包裝成 MCP server
         project_server = create_sdk_mcp_server(
@@ -140,6 +150,41 @@ class KomorebiAgent:
             tools=planning.all_tools,  # [plan_today, get_today, end_of_day]
         )
 
+        # 建立行事曆 MCP Server (如果啟用)
+        calendar_server = None
+        if self.config.calendar.enabled:
+            calendar_server = create_sdk_mcp_server(
+                name="calendar",
+                version="1.0.0",
+                tools=calendar.all_tools,  # [list_events, add_event]
+            )
+
+        # 組合 MCP servers
+        mcp_servers = {
+            "project": project_server,
+            "planning": planning_server,
+        }
+        if calendar_server:
+            mcp_servers["calendar"] = calendar_server
+
+        # 組合 allowed tools
+        allowed_tools = [
+            "mcp__project__list_projects",
+            "mcp__project__show_project",
+            "mcp__project__update_project_status",
+            "mcp__project__update_project_progress",
+            "mcp__planning__plan_today",
+            "mcp__planning__get_today",
+            "mcp__planning__end_of_day",
+        ]
+        if self.config.calendar.enabled:
+            allowed_tools.extend(
+                [
+                    "mcp__calendar__list_events",
+                    "mcp__calendar__add_event",
+                ]
+            )
+
         return ClaudeAgentOptions(
             system_prompt=self._load_system_prompt(),
             # 模型設定
@@ -147,20 +192,9 @@ class KomorebiAgent:
             # 預算限制
             max_budget_usd=self.max_budget_usd,
             # 註冊 MCP servers
-            mcp_servers={
-                "project": project_server,
-                "planning": planning_server,
-            },
+            mcp_servers=mcp_servers,
             # 允許使用的工具（格式：mcp__<server>__<tool>）
-            allowed_tools=[
-                "mcp__project__list_projects",
-                "mcp__project__show_project",
-                "mcp__project__update_project_status",
-                "mcp__project__update_project_progress",
-                "mcp__planning__plan_today",
-                "mcp__planning__get_today",
-                "mcp__planning__end_of_day",
-            ],
+            allowed_tools=allowed_tools,
         )
 
     def _load_system_prompt(self) -> str:

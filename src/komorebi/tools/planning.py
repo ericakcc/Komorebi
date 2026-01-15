@@ -178,6 +178,17 @@ async def plan_today(args: dict[str, Any]) -> dict[str, Any]:
         project_lines.append("- 預計: (待填寫)")
         project_lines.append("")
 
+    # 查詢今日行程 (如果 calendar 已設定)
+    calendar_section = "(行事曆未設定)"
+    try:
+        from . import calendar as cal
+
+        events_result = await cal.list_events.handler({"date": date_str})
+        if not events_result.get("is_error"):
+            calendar_section = events_result["content"][0]["text"]
+    except Exception:
+        pass
+
     # 組合完整內容
     content = f"""---
 date: {date_str}
@@ -187,6 +198,9 @@ updated_at: "{now.isoformat()}"
 ---
 
 # {date_str} ({weekday})
+
+## 今日行程
+{calendar_section}
 
 ## Highlight
 {highlight}
