@@ -57,6 +57,11 @@ class ChatInput(TextArea):
 
         pass
 
+    class EnterPressed(Message):
+        """Posted when Enter is pressed while palette is visible."""
+
+        pass
+
     # Track if command palette is showing
     palette_visible: reactive[bool] = reactive(False)
 
@@ -95,12 +100,17 @@ class ChatInput(TextArea):
         Args:
             event: Key event.
         """
-        # Normal enter = submit (only when palette not visible)
-        if event.key == "enter" and not self.palette_visible:
+        if event.key == "enter":
             event.prevent_default()
-            text = self.text.strip()
-            if text:
-                self.post_message(self.Submitted(text))
+
+            if self.palette_visible:
+                # Notify parent to handle palette selection
+                self.post_message(self.EnterPressed())
+            else:
+                # Normal submit
+                text = self.text.strip()
+                if text:
+                    self.post_message(self.Submitted(text))
             return
 
         # Shift+Enter falls through to default behavior (newline)

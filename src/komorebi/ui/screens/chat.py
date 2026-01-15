@@ -189,11 +189,13 @@ class ChatScreen(Screen):
         chat_input = self.query_one("#chat-input", ChatInput)
         palette = self.query_one(CommandPalette)
 
-        # Set the selected command in input
-        chat_input.set_text(event.command + " ")
+        # Set command and submit directly
+        chat_input.set_text(event.command)
         chat_input.palette_visible = False
         palette.hide()
-        chat_input.focus()
+
+        # Submit the command
+        chat_input.post_message(ChatInput.Submitted(event.command))
 
     def key_up(self, event) -> None:
         """Handle up key for command palette navigation."""
@@ -223,14 +225,13 @@ class ChatScreen(Screen):
             event.stop()
             event.prevent_default()
 
-    def key_enter(self, event) -> None:
-        """Handle enter key to select from command palette."""
-        chat_input = self.query_one("#chat-input", ChatInput)
-        if chat_input.palette_visible:
-            palette = self.query_one(CommandPalette)
+    def on_chat_input_enter_pressed(self, event: ChatInput.EnterPressed) -> None:
+        """Handle Enter key when palette is visible."""
+        palette = self.query_one(CommandPalette)
+
+        # Select highlighted command and submit
+        if palette.is_visible:
             palette.select_highlighted()
-            event.stop()
-            event.prevent_default()
 
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         """Handle user input submission.
