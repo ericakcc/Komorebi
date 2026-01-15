@@ -12,6 +12,7 @@
 - ClaudeSDKClient: 多輪對話，記住上下文，適合互動式應用
 """
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -41,6 +42,9 @@ _KOMOREBI_ROOT = Path(__file__).parent.parent.parent.resolve()
 
 # Console for tool confirmation prompts
 _console = Console()
+
+# Logger for audit trail
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
@@ -122,6 +126,10 @@ async def _check_tool_permission(
     Returns:
         允許或拒絕的結果
     """
+    # 審計日誌：記錄所有工具調用
+    input_summary = {k: str(v)[:100] for k, v in input.items()}
+    logger.info(f"Tool call: {tool_name} | Input: {input_summary}")
+
     # MCP 工具：需要確認的工具先詢問用戶
     if tool_name.startswith("mcp__"):
         if tool_name in _CONFIRM_TOOLS:

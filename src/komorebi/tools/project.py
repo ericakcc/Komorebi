@@ -5,18 +5,66 @@
 - 工具函數必須是 async def
 - 回傳格式：{"content": [{"type": "text", "text": "..."}]}
 - 錯誤時加上 "is_error": True
+- 使用 Pydantic BaseModel 驗證工具輸入
 
 這些工具用於讀寫 data/projects/*.md 檔案。
 """
 
-import subprocess
+import asyncio
+import logging
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
 import frontmatter
 from claude_agent_sdk import ClaudeAgentOptions, query, tool
 from claude_agent_sdk.types import ResultMessage
+from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Pydantic Input Models
+# ============================================================================
+
+
+class ProjectStatus(str, Enum):
+    """Valid project statuses."""
+
+    ACTIVE = "active"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    ARCHIVED = "archived"
+
+
+class ShowProjectInput(BaseModel):
+    """Input schema for show_project tool."""
+
+    name: str = Field(..., min_length=1, description="專案名稱")
+
+
+class UpdateStatusInput(BaseModel):
+    """Input schema for update_project_status tool."""
+
+    name: str = Field(..., min_length=1, description="專案名稱")
+    status: ProjectStatus = Field(..., description="新狀態")
+
+
+class UpdateProgressInput(BaseModel):
+    """Input schema for update_project_progress tool."""
+
+    name: str = Field(..., min_length=1, description="專案名稱")
+    days: int = Field(default=1, ge=1, le=30, description="分析最近幾天的變更")
+
+
+class SyncProjectInput(BaseModel):
+    """Input schema for sync_project tool."""
+
+    name: str = Field(..., min_length=1, description="專案名稱")
+    force: bool = Field(default=False, description="是否強制覆寫")
+
 
 # 專案資料目錄，由 agent 設定
 _data_dir: Path = Path("data")
@@ -73,12 +121,22 @@ async def list_projects(args: dict[str, Any]) -> dict[str, Any]:
                     "file": md_file.name,
                 }
             )
-        except Exception as e:
-            # 跳過無法解析的檔案，但記錄警告
+        except (OSError, IOError) as e:
+            logger.warning(f"Failed to read {md_file}: {e}")
             projects.append(
                 {
                     "name": md_file.stem,
-                    "status": f"error: {e}",
+                    "status": "error: file read failed",
+                    "priority": 999,
+                    "file": md_file.name,
+                }
+            )
+        except (KeyError, ValueError) as e:
+            logger.warning(f"Failed to parse frontmatter in {md_file}: {e}")
+            projects.append(
+                {
+                    "name": md_file.stem,
+                    "status": "error: invalid format",
                     "priority": 999,
                     "file": md_file.name,
                 }
@@ -112,7 +170,7 @@ async def list_projects(args: dict[str, Any]) -> dict[str, Any]:
 @tool(
     name="show_project",
     description="顯示單一專案的完整資訊，包含目標、技術棧、進度、blockers 等詳細內容。",
-    input_schema={"name": str},  # 參數：專案名稱
+    input_schema=ShowProjectInput.model_json_schema(),
 )
 async def show_project(args: dict[str, Any]) -> dict[str, Any]:
     """Show detailed information about a specific project.
@@ -125,12 +183,15 @@ async def show_project(args: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Tool response with project details.
     """
-    name = args.get("name", "")
-    if not name:
+    try:
+        validated = ShowProjectInput(**args)
+    except ValueError as e:
         return {
-            "content": [{"type": "text", "text": "請提供專案名稱。"}],
+            "content": [{"type": "text", "text": f"輸入驗證失敗：{e}"}],
             "is_error": True,
         }
+
+    name = validated.name
 
     projects_dir = _get_projects_dir()
 
@@ -163,10 +224,7 @@ async def show_project(args: dict[str, Any]) -> dict[str, Any]:
 @tool(
     name="update_project_status",
     description="更新專案的狀態（active, paused, completed, archived）。",
-    input_schema={
-        "name": str,
-        "status": str,  # active, paused, completed, archived
-    },
+    input_schema=UpdateStatusInput.model_json_schema(),
 )
 async def update_project_status(args: dict[str, Any]) -> dict[str, Any]:
     """Update the status of a project.
@@ -179,20 +237,21 @@ async def update_project_status(args: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Tool response confirming the update.
     """
-    name = args.get("name", "")
-    new_status = args.get("status", "")
-
-    valid_statuses = ["active", "paused", "completed", "archived"]
-    if new_status not in valid_statuses:
+    try:
+        validated = UpdateStatusInput(**args)
+    except ValueError as e:
         return {
             "content": [
                 {
                     "type": "text",
-                    "text": f"無效的狀態：{new_status}\n有效狀態：{', '.join(valid_statuses)}",
+                    "text": f"輸入驗證失敗：{e}\n有效狀態：active, paused, completed, archived",
                 }
             ],
             "is_error": True,
         }
+
+    name = validated.name
+    new_status = validated.status.value
 
     projects_dir = _get_projects_dir()
 
@@ -215,8 +274,7 @@ async def update_project_status(args: dict[str, Any]) -> dict[str, Any]:
         old_status = post.get("status", "unknown")
         post["status"] = new_status
 
-        with open(project_file, "w", encoding="utf-8") as f:
-            f.write(frontmatter.dumps(post))
+        project_file.write_text(frontmatter.dumps(post), encoding="utf-8")
 
         return {
             "content": [
@@ -226,9 +284,16 @@ async def update_project_status(args: dict[str, Any]) -> dict[str, Any]:
                 }
             ],
         }
-    except Exception as e:
+    except (OSError, IOError) as e:
+        logger.error(f"Failed to write project file {project_file}: {e}")
         return {
-            "content": [{"type": "text", "text": f"更新失敗：{e}"}],
+            "content": [{"type": "text", "text": f"寫入檔案失敗：{e}"}],
+            "is_error": True,
+        }
+    except (KeyError, ValueError) as e:
+        logger.error(f"Failed to parse frontmatter in {project_file}: {e}")
+        return {
+            "content": [{"type": "text", "text": f"檔案格式錯誤：{e}"}],
             "is_error": True,
         }
 
@@ -238,8 +303,8 @@ async def update_project_status(args: dict[str, Any]) -> dict[str, Any]:
 # ============================================================================
 
 
-def _run_git_command(repo_path: Path, args: list[str]) -> str:
-    """Run a git command and return output.
+async def _run_git_command(repo_path: Path, args: list[str]) -> str:
+    """Run a git command asynchronously and return output.
 
     Args:
         repo_path: Path to the git repository.
@@ -249,22 +314,27 @@ def _run_git_command(repo_path: Path, args: list[str]) -> str:
         Command output or empty string on error.
     """
     try:
-        result = subprocess.run(
-            ["git", *args],
+        process = await asyncio.create_subprocess_exec(
+            "git",
+            *args,
             cwd=repo_path,
-            capture_output=True,
-            text=True,
-            timeout=30,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
         )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        pass
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=30)
+        if process.returncode == 0:
+            return stdout.decode().strip()
+    except asyncio.TimeoutError:
+        logger.warning(f"Git command timed out: git {' '.join(args)}")
+    except FileNotFoundError:
+        logger.warning("Git executable not found")
+    except OSError as e:
+        logger.warning(f"Git command failed: {e}")
     return ""
 
 
-def _collect_git_info(repo_path: Path, days: int = 1) -> dict[str, str]:
-    """Collect git log and diff information.
+async def _collect_git_info(repo_path: Path, days: int = 1) -> dict[str, str]:
+    """Collect git log and diff information asynchronously.
 
     Args:
         repo_path: Path to the git repository.
@@ -273,11 +343,21 @@ def _collect_git_info(repo_path: Path, days: int = 1) -> dict[str, str]:
     Returns:
         Dictionary with log, diff, and changed_files.
     """
+    # Run git commands in parallel for better performance
+    log_task = _run_git_command(repo_path, ["log", f"--since={days} days ago", "--oneline"])
+    diff_task = _run_git_command(repo_path, ["diff", f"HEAD~{days}", "--stat"])
+    diff_content_task = _run_git_command(repo_path, ["diff", f"HEAD~{days}"])
+    changed_files_task = _run_git_command(repo_path, ["diff", "--name-only", f"HEAD~{days}"])
+
+    log, diff, diff_content, changed_files = await asyncio.gather(
+        log_task, diff_task, diff_content_task, changed_files_task
+    )
+
     return {
-        "log": _run_git_command(repo_path, ["log", f"--since={days} days ago", "--oneline"]),
-        "diff": _run_git_command(repo_path, ["diff", f"HEAD~{days}", "--stat"]),
-        "diff_content": _run_git_command(repo_path, ["diff", f"HEAD~{days}"]),
-        "changed_files": _run_git_command(repo_path, ["diff", "--name-only", f"HEAD~{days}"]),
+        "log": log,
+        "diff": diff,
+        "diff_content": diff_content,
+        "changed_files": changed_files,
     }
 
 
@@ -348,17 +428,13 @@ def _append_progress_log(project_file: Path, date_str: str, summary: str) -> Non
 
     post.content = content
 
-    with open(project_file, "w", encoding="utf-8") as f:
-        f.write(frontmatter.dumps(post))
+    project_file.write_text(frontmatter.dumps(post), encoding="utf-8")
 
 
 @tool(
     name="update_project_progress",
     description="用 AI 分析專案的 git 變更，自動撰寫進度日誌。會研究 commits 和程式碼變更後生成摘要。",
-    input_schema={
-        "name": str,
-        "days": int,
-    },
+    input_schema=UpdateProgressInput.model_json_schema(),
 )
 async def update_project_progress(args: dict[str, Any]) -> dict[str, Any]:
     """Analyze project git changes and update progress log.
@@ -374,14 +450,16 @@ async def update_project_progress(args: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Tool response with generated progress summary.
     """
-    name = args.get("name", "")
-    days = args.get("days", 1)
-
-    if not name:
+    try:
+        validated = UpdateProgressInput(**args)
+    except ValueError as e:
         return {
-            "content": [{"type": "text", "text": "請提供專案名稱。"}],
+            "content": [{"type": "text", "text": f"輸入驗證失敗：{e}"}],
             "is_error": True,
         }
+
+    name = validated.name
+    days = validated.days
 
     # 找到專案檔案
     projects_dir = _get_projects_dir()
@@ -432,7 +510,7 @@ async def update_project_progress(args: dict[str, Any]) -> dict[str, Any]:
         }
 
     # 收集 git 資訊
-    git_info = _collect_git_info(repo_path, days)
+    git_info = await _collect_git_info(repo_path, days)
 
     if not git_info["log"]:
         return {
@@ -502,8 +580,8 @@ def _read_file_safely(file_path: Path, max_chars: int = 4000) -> str:
         return ""
 
 
-def _collect_repo_info_full(repo_path: Path, full_analysis: bool = False) -> dict[str, str]:
-    """Collect comprehensive repository information.
+async def _collect_repo_info_full(repo_path: Path, full_analysis: bool = False) -> dict[str, str]:
+    """Collect comprehensive repository information asynchronously.
 
     Args:
         repo_path: Path to the repository.
@@ -528,28 +606,36 @@ def _collect_repo_info_full(repo_path: Path, full_analysis: bool = False) -> dic
     info["dependencies"] = _read_file_safely(deps_file, max_chars=2000)
 
     # Directory structure
-    info["structure"] = _run_git_command(
+    info["structure"] = await _run_git_command(
         repo_path,
         ["-c", "core.quotepath=false", "ls-tree", "-r", "--name-only", "HEAD"],
     )
     if not info["structure"]:
-        # Fallback: use find command
+        # Fallback: use find command asynchronously
         try:
-            result = subprocess.run(
-                ["find", ".", "-maxdepth", "3", "-type", "f", "-name", "*.py"],
+            process = await asyncio.create_subprocess_exec(
+                "find",
+                ".",
+                "-maxdepth",
+                "3",
+                "-type",
+                "f",
+                "-name",
+                "*.py",
                 cwd=repo_path,
-                capture_output=True,
-                text=True,
-                timeout=10,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
             )
-            info["structure"] = result.stdout.strip()
-        except Exception:
+            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=10)
+            info["structure"] = stdout.decode().strip()
+        except (asyncio.TimeoutError, OSError) as e:
+            logger.warning(f"Failed to get directory structure: {e}")
             info["structure"] = "(無法取得目錄結構)"
 
     # Git log
     if full_analysis:
         # Full history for init mode
-        info["git_log"] = _run_git_command(repo_path, ["log", "--oneline", "-50"])
+        info["git_log"] = await _run_git_command(repo_path, ["log", "--oneline", "-50"])
         # Other docs
         other_docs = []
         for doc_name in ["TECHNICAL.md", "API_SPEC.md", "ARCHITECTURE.md"]:
@@ -559,7 +645,9 @@ def _collect_repo_info_full(repo_path: Path, full_analysis: bool = False) -> dic
         info["other_docs"] = "\n\n".join(other_docs) if other_docs else "(無)"
     else:
         # Recent history for sync mode
-        info["git_log"] = _run_git_command(repo_path, ["log", "--since=7 days ago", "--oneline"])
+        info["git_log"] = await _run_git_command(
+            repo_path, ["log", "--since=7 days ago", "--oneline"]
+        )
         info["other_docs"] = "(sync mode: 略過)"
 
     return info
@@ -798,8 +886,7 @@ def _update_project_sections(
 
     post.content = content
 
-    with open(project_file, "w", encoding="utf-8") as f:
-        f.write(frontmatter.dumps(post))
+    project_file.write_text(frontmatter.dumps(post), encoding="utf-8")
 
     return updated_sections
 
@@ -807,10 +894,7 @@ def _update_project_sections(
 @tool(
     name="sync_project",
     description="從 repo 內容同步專案資訊。分析 README、CLAUDE.md、程式碼結構等，用 AI 生成/更新專案描述、技術棧、進度。初次使用會進行完整分析。",
-    input_schema={
-        "name": str,
-        "force": bool,
-    },
+    input_schema=SyncProjectInput.model_json_schema(),
 )
 async def sync_project(args: dict[str, Any]) -> dict[str, Any]:
     """Sync project information from repository content.
@@ -830,14 +914,16 @@ async def sync_project(args: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Tool response with sync summary.
     """
-    name = args.get("name", "")
-    force = args.get("force", False)
-
-    if not name:
+    try:
+        validated = SyncProjectInput(**args)
+    except ValueError as e:
         return {
-            "content": [{"type": "text", "text": "請提供專案名稱。"}],
+            "content": [{"type": "text", "text": f"輸入驗證失敗：{e}"}],
             "is_error": True,
         }
+
+    name = validated.name
+    force = validated.force
 
     # Find project file
     projects_dir = _get_projects_dir()
@@ -891,7 +977,7 @@ async def sync_project(args: dict[str, Any]) -> dict[str, Any]:
     mode_name = "init (完整分析)" if is_init else "sync (增量更新)"
 
     # Collect repo info
-    repo_info = _collect_repo_info_full(repo_path, full_analysis=is_init)
+    repo_info = await _collect_repo_info_full(repo_path, full_analysis=is_init)
 
     if not repo_info.get("readme"):
         return {
