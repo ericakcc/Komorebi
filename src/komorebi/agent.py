@@ -27,7 +27,7 @@ from claude_agent_sdk import (
 )
 
 from .config import Config, load_config
-from .tools import project
+from .tools import planning, project
 
 
 class UsageStats:
@@ -77,9 +77,9 @@ class KomorebiAgent:
     # 模型對照表（2025-01 最新）
     # 參考: https://platform.claude.com/docs/en/about-claude/models/overview
     MODELS = {
-        "opus": "claude-opus-4-5-20251101",      # $5/$25 per MTok - 最強
+        "opus": "claude-opus-4-5-20251101",  # $5/$25 per MTok - 最強
         "sonnet": "claude-sonnet-4-5-20250929",  # $3/$15 per MTok - 平衡（推薦）
-        "haiku": "claude-haiku-4-5-20251001",    # $1/$5 per MTok - 最快最便宜
+        "haiku": "claude-haiku-4-5-20251001",  # $1/$5 per MTok - 最快最便宜
     }
 
     def __init__(
@@ -123,6 +123,7 @@ class KomorebiAgent:
         """
         # 設定工具的資料目錄
         project.set_data_dir(self.config.data_dir)
+        planning.set_data_dir(self.config.data_dir)
 
         # 建立專案管理 MCP Server
         # create_sdk_mcp_server() 把 @tool 裝飾的函數包裝成 MCP server
@@ -130,6 +131,13 @@ class KomorebiAgent:
             name="project",
             version="1.0.0",
             tools=project.all_tools,  # [list_projects, show_project, update_project_status]
+        )
+
+        # 建立每日規劃 MCP Server
+        planning_server = create_sdk_mcp_server(
+            name="planning",
+            version="1.0.0",
+            tools=planning.all_tools,  # [plan_today, get_today, end_of_day]
         )
 
         return ClaudeAgentOptions(
@@ -141,12 +149,16 @@ class KomorebiAgent:
             # 註冊 MCP servers
             mcp_servers={
                 "project": project_server,
+                "planning": planning_server,
             },
             # 允許使用的工具（格式：mcp__<server>__<tool>）
             allowed_tools=[
                 "mcp__project__list_projects",
                 "mcp__project__show_project",
                 "mcp__project__update_project_status",
+                "mcp__planning__plan_today",
+                "mcp__planning__get_today",
+                "mcp__planning__end_of_day",
             ],
         )
 
