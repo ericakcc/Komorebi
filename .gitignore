@@ -30,3 +30,6 @@ secrets.*
 
 # Logs
 *.log
+
+# User data
+data/
