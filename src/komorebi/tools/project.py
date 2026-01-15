@@ -51,7 +51,9 @@ async def list_projects(args: dict[str, Any]) -> dict[str, Any]:
 
     if not projects_dir.exists():
         return {
-            "content": [{"type": "text", "text": "專案資料夾不存在。請先建立 data/projects/ 目錄。"}],
+            "content": [
+                {"type": "text", "text": "專案資料夾不存在。請先建立 data/projects/ 目錄。"}
+            ],
             "is_error": True,
         }
 
@@ -60,20 +62,24 @@ async def list_projects(args: dict[str, Any]) -> dict[str, Any]:
     for md_file in projects_dir.glob("*.md"):
         try:
             post = frontmatter.load(md_file)
-            projects.append({
-                "name": post.get("name", md_file.stem),
-                "status": post.get("status", "unknown"),
-                "priority": post.get("priority", 999),
-                "file": md_file.name,
-            })
+            projects.append(
+                {
+                    "name": post.get("name", md_file.stem),
+                    "status": post.get("status", "unknown"),
+                    "priority": post.get("priority", 999),
+                    "file": md_file.name,
+                }
+            )
         except Exception as e:
             # 跳過無法解析的檔案，但記錄警告
-            projects.append({
-                "name": md_file.stem,
-                "status": f"error: {e}",
-                "priority": 999,
-                "file": md_file.name,
-            })
+            projects.append(
+                {
+                    "name": md_file.stem,
+                    "status": f"error: {e}",
+                    "priority": 999,
+                    "file": md_file.name,
+                }
+            )
 
     if not projects:
         return {
@@ -136,10 +142,12 @@ async def show_project(args: dict[str, Any]) -> dict[str, Any]:
         # 列出可用的專案
         available = [f.stem for f in projects_dir.glob("*.md")]
         return {
-            "content": [{
-                "type": "text",
-                "text": f"找不到專案：{name}\n可用的專案：{', '.join(available) if available else '(無)'}",
-            }],
+            "content": [
+                {
+                    "type": "text",
+                    "text": f"找不到專案：{name}\n可用的專案：{', '.join(available) if available else '(無)'}",
+                }
+            ],
             "is_error": True,
         }
 
@@ -174,10 +182,12 @@ async def update_project_status(args: dict[str, Any]) -> dict[str, Any]:
     valid_statuses = ["active", "paused", "completed", "archived"]
     if new_status not in valid_statuses:
         return {
-            "content": [{
-                "type": "text",
-                "text": f"無效的狀態：{new_status}\n有效狀態：{', '.join(valid_statuses)}",
-            }],
+            "content": [
+                {
+                    "type": "text",
+                    "text": f"無效的狀態：{new_status}\n有效狀態：{', '.join(valid_statuses)}",
+                }
+            ],
             "is_error": True,
         }
 
@@ -206,10 +216,12 @@ async def update_project_status(args: dict[str, Any]) -> dict[str, Any]:
             f.write(frontmatter.dumps(post))
 
         return {
-            "content": [{
-                "type": "text",
-                "text": f"已更新 **{name}** 狀態：{old_status} → {new_status}",
-            }],
+            "content": [
+                {
+                    "type": "text",
+                    "text": f"已更新 **{name}** 狀態：{old_status} → {new_status}",
+                }
+            ],
         }
     except Exception as e:
         return {

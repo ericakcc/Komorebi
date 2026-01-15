@@ -40,8 +40,7 @@ async def run_repl(config_path: Path, model: str, max_budget: float | None) -> N
     # 顯示歡迎訊息
     console.print(
         Panel.fit(
-            "[bold blue]Komorebi[/bold blue] v0.1.0\n"
-            "[dim]你的個人執行助理[/dim]",
+            "[bold blue]Komorebi[/bold blue] v0.1.0\n[dim]你的個人執行助理[/dim]",
             border_style="blue",
         )
     )
@@ -66,9 +65,7 @@ async def run_repl(config_path: Path, model: str, max_budget: float | None) -> N
 
                 if user_input.lower() == "/help":
                     console.print(
-                        "[dim]/usage - 查看 API 消耗\n"
-                        "/help  - 顯示幫助\n"
-                        "exit   - 離開[/dim]\n"
+                        "[dim]/usage - 查看 API 消耗\n/help  - 顯示幫助\nexit   - 離開[/dim]\n"
                     )
                     continue
 
@@ -101,7 +98,8 @@ async def run_repl(config_path: Path, model: str, max_budget: float | None) -> N
     type=click.Path(),
 )
 @click.option(
-    "--model", "-m",
+    "--model",
+    "-m",
     default="sonnet",
     type=click.Choice(["opus", "sonnet", "haiku"]),
     help="模型選擇：opus(最強)、sonnet(平衡)、haiku(最快)",
