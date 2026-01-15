@@ -1,9 +1,9 @@
 ---
 name: Komorebi
-status: active
 priority: 1
-started: 2026-01-14
 repo: ~/Komorebi
+started: 2026-01-14
+status: active
 ---
 
 # Komorebi
@@ -35,10 +35,10 @@ repo: ~/Komorebi
 - [x] create_sdk_mcp_server() 整合
 - [x] list_projects, show_project, update_project_status
 
-### ⏳ 階段四：每日規劃 (MVP-3)
-- [ ] tools/planning.py
-- [ ] data/daily/*.md 模板
-- [ ] plan_today, end_of_day 工具
+### ✅ 階段四：每日規劃 (MVP-3)
+- [x] tools/planning.py - plan_today, get_today, end_of_day
+- [x] data/daily/*.md 格式設計
+- [x] 單元測試 (16 tests, 使用 .handler 模式)
 
 ### ⏳ 階段五：行事曆整合 (MVP-4)
 - [ ] tools/calendar.py
@@ -64,7 +64,35 @@ repo: ~/Komorebi
 | `create_sdk_mcp_server()` | 建立 MCP server |
 | `mcp__<server>__<tool>` | 工具命名規則 |
 
+### @tool 測試方式
+`@tool` decorator 返回 `SdkMcpTool` 對象，不是函數。測試時使用 `.handler` 屬性：
+```python
+# ❌ 錯誤：TypeError: 'SdkMcpTool' object is not callable
+result = await planning.plan_today(args)
+
+# ✅ 正確：通過 .handler 調用底層函數
+result = await planning.plan_today.handler(args)
+```
+
 ## 進度日誌
+
+### 2026-01-15
+- **MVP-3 每日規劃功能已完成**：實作 `plan_today`、`get_today`、`end_of_day` 三個工具，並建立 `data/daily/*.md` 格式設計，16 個單元測試全數通過
+
+- **@tool decorator 測試模式確立**：研究並採用 `.handler` 屬性調用方式進行單元測試，解決 `SdkMcpTool` 對象不可直接調用的問題
+
+- **專案管理工具持續擴充**：新增 `update_project_progress` 工具，`tools/project.py` 大幅擴充 275 行程式碼（+312/-37）
+
+- **開發環境優化**：新增 pytest、pytest-asyncio、ruff 等開發依賴，並對 `main.py` 和 `project.py` 套用 ruff 格式化
+
+- **文件與指引完善**：新增 `CLAUDE.md` Claude Code 使用指引、SDK 測試腳本，並在專案文件中記錄 @tool 測試最佳實踐
+
+### 2026-01-15
+- 完成 MVP-3 每日規劃工具
+- 實作 plan_today, get_today, end_of_day 三個工具
+- 研究 @tool decorator 測試模式，採用 .handler 方式
+- 撰寫 16 個單元測試，100% 通過
+- 新增 dev dependencies (pytest, pytest-asyncio, ruff)
 
 ### 2026-01-14
 - 專案初始化，建立完整資料夾結構

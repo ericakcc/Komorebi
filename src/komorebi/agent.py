@@ -156,6 +156,7 @@ class KomorebiAgent:
                 "mcp__project__list_projects",
                 "mcp__project__show_project",
                 "mcp__project__update_project_status",
+                "mcp__project__update_project_progress",
                 "mcp__planning__plan_today",
                 "mcp__planning__get_today",
                 "mcp__planning__end_of_day",
