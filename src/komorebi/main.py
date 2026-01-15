@@ -73,14 +73,19 @@ async def run_repl(config_path: Path, model: str, max_budget: float | None) -> N
                 if not user_input.strip():
                     continue
 
-                # Eval & Print: 發送給 Claude 並顯示回應
-                response_parts: list[str] = []
-                async for chunk in agent.chat(user_input):
-                    response_parts.append(chunk)
+                # Eval & Print: 發送給 Claude 並串流顯示回應
+                console.print("[blue]Komorebi[/blue]: ", end="")
+                has_output = False
 
-                # 組合並顯示完整回應
-                full_response = "".join(response_parts)
-                console.print(f"[blue]Komorebi[/blue]: {full_response}\n")
+                async for chunk in agent.chat(user_input):
+                    has_output = True
+                    # 串流輸出每個 chunk
+                    console.print(chunk, end="")
+
+                # 確保換行
+                if has_output:
+                    console.print()  # 換行
+                console.print()  # 空行分隔
 
             except KeyboardInterrupt:
                 console.print(f"\n[dim]{agent.usage}[/dim]")

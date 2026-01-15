@@ -3,7 +3,7 @@ name: LayerWise
 status: active
 priority: 1
 started: 2026-01-14
-repo: ~/projects/layerwise
+repo: ~/LayerWise
 ---
 
 # LayerWise

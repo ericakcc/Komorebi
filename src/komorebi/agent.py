@@ -15,19 +15,93 @@
 from pathlib import Path
 from typing import AsyncIterator
 
+from typing import Any
+
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    PermissionResultAllow,
+    PermissionResultDeny,
     ResultMessage,
     SystemMessage,
     TextBlock,
+    ToolPermissionContext,
     ToolUseBlock,
     create_sdk_mcp_server,
 )
 
 from .config import Config, load_config
 from .tools import calendar, planning, project
+
+# Komorebi 專案根目錄
+_KOMOREBI_ROOT = Path(__file__).parent.parent.parent.resolve()
+
+
+async def _check_tool_permission(
+    tool_name: str,
+    input: dict[str, Any],
+    context: ToolPermissionContext,
+) -> PermissionResultAllow | PermissionResultDeny:
+    """SDK 層級的權限檢查。
+
+    確保 agent 不會修改其他專案資料夾。
+    所有寫入操作只能在 Komorebi 專案內進行。
+
+    Args:
+        tool_name: 工具名稱
+        input: 工具輸入參數
+        context: 權限上下文
+
+    Returns:
+        允許或拒絕的結果
+    """
+    # MCP 工具直接允許（已有白名單控制）
+    if tool_name.startswith("mcp__"):
+        return PermissionResultAllow(behavior="allow")
+
+    # Bash 指令檢查
+    if tool_name == "Bash":
+        cmd = input.get("command", "")
+
+        # 禁止切換目錄到其他專案
+        other_project_paths = ["~/LayerWise", "~/projects", "/Users/eric_tsou/LayerWise"]
+        if "cd " in cmd:
+            for proj in other_project_paths:
+                if proj in cmd:
+                    return PermissionResultDeny(
+                        behavior="deny",
+                        message=f"禁止切換到其他專案目錄（{proj}）。請使用 sync_project 工具來同步專案資訊。",
+                    )
+
+        # 禁止在其他專案執行寫入操作
+        write_patterns = ["mkdir", "touch", "rm ", "mv ", "cp ", " > ", " >> "]
+        if any(p in cmd for p in write_patterns):
+            for proj in other_project_paths:
+                if proj in cmd:
+                    return PermissionResultDeny(
+                        behavior="deny",
+                        message=f"禁止在其他專案資料夾（{proj}）執行寫入操作。",
+                    )
+
+    # Edit/Write 工具路徑檢查
+    if tool_name in ["Edit", "Write"]:
+        file_path = input.get("file_path", "")
+
+        # 只允許編輯 Komorebi 專案內的檔案
+        allowed_prefixes = [
+            str(_KOMOREBI_ROOT) + "/",
+        ]
+
+        path_allowed = any(file_path.startswith(p) for p in allowed_prefixes)
+        if not path_allowed:
+            return PermissionResultDeny(
+                behavior="deny",
+                message=f"只允許編輯 Komorebi 專案內的檔案。嘗試編輯：{file_path}",
+            )
+
+    # 其他工具（如 Read）允許
+    return PermissionResultAllow(behavior="allow")
 
 
 class UsageStats:
@@ -173,6 +247,7 @@ class KomorebiAgent:
             "mcp__project__show_project",
             "mcp__project__update_project_status",
             "mcp__project__update_project_progress",
+            "mcp__project__sync_project",
             "mcp__planning__plan_today",
             "mcp__planning__get_today",
             "mcp__planning__end_of_day",
@@ -195,6 +270,8 @@ class KomorebiAgent:
             mcp_servers=mcp_servers,
             # 允許使用的工具（格式：mcp__<server>__<tool>）
             allowed_tools=allowed_tools,
+            # SDK 層級權限檢查：確保不會修改其他專案
+            can_use_tool=_check_tool_permission,
         )
 
     def _load_system_prompt(self) -> str:
