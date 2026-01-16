@@ -29,6 +29,7 @@ from claude_agent_sdk import (
     ToolPermissionContext,
     ToolResultBlock,
     ToolUseBlock,
+    UserMessage,
     create_sdk_mcp_server,
 )
 from rich.console import Console
@@ -447,6 +448,16 @@ class KomorebiAgent:
                             tool_input=block.input,
                         )
                     elif isinstance(block, ToolResultBlock):
+                        yield ToolEndEvent(
+                            tool_id=block.tool_use_id,
+                            result=str(block.content)[:200] if block.content else "",
+                            is_error=block.is_error or False,
+                        )
+
+            # UserMessage: SDK 可能將 ToolResultBlock 包含在 UserMessage 中
+            if isinstance(msg, UserMessage):
+                for block in msg.content:
+                    if isinstance(block, ToolResultBlock):
                         yield ToolEndEvent(
                             tool_id=block.tool_use_id,
                             result=str(block.content)[:200] if block.content else "",

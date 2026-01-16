@@ -30,6 +30,9 @@ class KomorebiApp(App[None]):
     SUB_TITLE = "Personal AI Assistant"
     CSS_PATH = "styles.tcss"
 
+    # Smoother scroll (default is ~3-5 lines per wheel tick)
+    SCROLL_SENSITIVITY_Y = 1
+
     BINDINGS = [
         Binding("ctrl+c", "quit", "Quit", show=True, priority=True),
         Binding("ctrl+l", "clear", "Clear", show=True),

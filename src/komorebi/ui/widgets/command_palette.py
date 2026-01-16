@@ -143,6 +143,14 @@ class CommandPalette(Vertical):
             self.post_message(self.CommandSelected(event.option.id))
         self.hide()
 
+    def has_highlighted(self) -> bool:
+        """Check if there is a highlighted option."""
+        return (
+            self._option_list is not None
+            and self._option_list.option_count > 0
+            and self._option_list.highlighted is not None
+        )
+
     def select_highlighted(self) -> None:
         """Select the currently highlighted option."""
         if self._option_list and self._option_list.highlighted is not None:

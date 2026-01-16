@@ -3,8 +3,10 @@
 Main conversation interface with message history, input, and status bar.
 """
 
+import asyncio
 from typing import TYPE_CHECKING
 
+from textual import events
 from textual.app import ComposeResult
 from textual.containers import VerticalScroll
 from textual.screen import Screen
@@ -23,6 +25,46 @@ from ...agent import (
 
 if TYPE_CHECKING:
     from ..app import KomorebiApp
+
+
+class SmoothScroll(VerticalScroll):
+    """VerticalScroll with controlled scroll speed and throttling."""
+
+    SCROLL_AMOUNT = 1  # Lines per scroll event
+    SCROLL_THROTTLE = 0.05  # Minimum seconds between scroll events (50ms)
+
+    def __init__(self, *args, **kwargs) -> None:
+        """Initialize with scroll throttle tracking."""
+        super().__init__(*args, **kwargs)
+        self._last_scroll_time: float = 0.0
+
+    def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+        """Completely override scroll down handling with throttling."""
+        import time
+
+        now = time.monotonic()
+        if now - self._last_scroll_time < self.SCROLL_THROTTLE:
+            event.stop()
+            return
+        self._last_scroll_time = now
+
+        if self.allow_vertical_scroll:
+            self.scroll_relative(y=self.SCROLL_AMOUNT, animate=False)
+            event.stop()
+
+    def _on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+        """Completely override scroll up handling with throttling."""
+        import time
+
+        now = time.monotonic()
+        if now - self._last_scroll_time < self.SCROLL_THROTTLE:
+            event.stop()
+            return
+        self._last_scroll_time = now
+
+        if self.allow_vertical_scroll:
+            self.scroll_relative(y=-self.SCROLL_AMOUNT, animate=False)
+            event.stop()
 
 
 class StatusBar(Static):
@@ -107,7 +149,8 @@ class ChatScreen(Screen):
         super().__init__()
         self._agent: KomorebiAgent | None = None
         self._current_message: MessageView | None = None
-        self._current_tool_panel: ToolPanel | None = None
+        # Use dict to track all tool panels by tool_id
+        self._tool_panels: dict[str, ToolPanel] = {}
 
     @property
     def komorebi_app(self) -> "KomorebiApp":
@@ -122,7 +165,7 @@ class ChatScreen(Screen):
     def compose(self) -> ComposeResult:
         """Compose the screen layout."""
         yield Header()
-        yield VerticalScroll(id="chat-container")
+        yield SmoothScroll(id="chat-container")
         yield CommandPalette()
         yield ChatInput(id="chat-input")
         yield StatusBar()
@@ -189,13 +232,20 @@ class ChatScreen(Screen):
         chat_input = self.query_one("#chat-input", ChatInput)
         palette = self.query_one(CommandPalette)
 
-        # Set command and submit directly
-        chat_input.set_text(event.command)
+        # Preserve user's full input if it starts with the selected command
+        # e.g., "/sync layerwise" should not become just "/sync"
+        current_text = chat_input.text.strip()
+        if current_text.startswith(event.command):
+            final_text = current_text
+        else:
+            final_text = event.command
+
+        chat_input.set_text(final_text)
         chat_input.palette_visible = False
         palette.hide()
 
         # Submit the command
-        chat_input.post_message(ChatInput.Submitted(event.command))
+        chat_input.post_message(ChatInput.Submitted(final_text))
 
     def key_up(self, event) -> None:
         """Handle up key for command palette navigation."""
@@ -228,10 +278,19 @@ class ChatScreen(Screen):
     def on_chat_input_enter_pressed(self, event: ChatInput.EnterPressed) -> None:
         """Handle Enter key when palette is visible."""
         palette = self.query_one(CommandPalette)
+        chat_input = self.query_one("#chat-input", ChatInput)
 
-        # Select highlighted command and submit
-        if palette.is_visible:
+        # If palette has highlighted option, select it
+        # Otherwise, submit the current input directly
+        if palette.is_visible and palette.has_highlighted():
             palette.select_highlighted()
+        else:
+            # No matching command, submit as-is
+            palette.hide()
+            chat_input.palette_visible = False
+            text = chat_input.text.strip()
+            if text:
+                chat_input.post_message(ChatInput.Submitted(text))
 
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         """Handle user input submission.
@@ -300,20 +359,28 @@ class ChatScreen(Screen):
                         self.call_after_refresh(container.scroll_end, animate=False)
 
                 elif isinstance(event, ToolStartEvent):
-                    # Add tool panel
+                    # Add tool panel, track by tool_id
                     tool_name = format_tool_name(event.tool_name)
-                    self._current_tool_panel = ToolPanel(
+                    panel = ToolPanel(
                         tool_name=tool_name,
                         tool_input=event.tool_input,
                     )
-                    await container.mount(self._current_tool_panel)
+                    self._tool_panels[event.tool_id] = panel
+                    await container.mount(panel)
+                    panel.refresh()  # Force refresh to ensure immediate rendering
                     self.call_after_refresh(container.scroll_end, animate=False)
+                    # Wait for mount and initial render to complete
+                    await asyncio.sleep(0.1)
 
                 elif isinstance(event, ToolEndEvent):
-                    # Update tool panel status
-                    if self._current_tool_panel:
-                        self._current_tool_panel.set_result(event.result, event.is_error)
-                        self._current_tool_panel = None
+                    # Find panel by tool_id and update status
+                    panel = self._tool_panels.pop(event.tool_id, None)
+                    if panel:
+                        panel.set_result(event.result, event.is_error)
+                        # Remove panel on success, keep on error for visibility
+                        if not event.is_error:
+                            await asyncio.sleep(0.5)  # Delay to ensure user sees the result
+                            await panel.remove()
 
                 elif isinstance(event, DoneEvent):
                     # Update status bar

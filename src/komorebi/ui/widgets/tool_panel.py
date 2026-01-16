@@ -13,7 +13,7 @@ class ToolPanel(Collapsible):
     """Collapsible tool execution panel.
 
     Shows tool name, status indicator, and output.
-    Starts expanded, auto-collapses after completion.
+    Removed on success, kept on error for visibility.
     """
 
     DEFAULT_CSS = """
@@ -53,6 +53,12 @@ class ToolPanel(Collapsible):
         background: $error-darken-3;
         color: $error-lighten-1;
     }
+
+    ToolPanel .tool-running-status {
+        color: $secondary-lighten-1;
+        padding: 0 1;
+        text-style: italic;
+    }
     """
 
     def __init__(
@@ -67,7 +73,7 @@ class ToolPanel(Collapsible):
             tool_input: Tool input parameters.
         """
         # Format title with running indicator
-        title = f" {tool_name}..."
+        title = f"⏳ {tool_name}..."
         super().__init__(title=title, collapsed=False)
         self.add_class("running")
 
@@ -76,9 +82,14 @@ class ToolPanel(Collapsible):
         self._result: str | None = None
         self._is_error: bool = False
         self._result_widget: Static | None = None
+        self._status_widget: Static | None = None
 
     def compose(self) -> ComposeResult:
         """Compose the panel content."""
+        # Show static running status
+        self._status_widget = Static("Running...", classes="tool-running-status")
+        yield self._status_widget
+
         # Show input parameters
         if self._tool_input:
             input_lines = []
@@ -91,6 +102,7 @@ class ToolPanel(Collapsible):
 
         # Placeholder for result
         self._result_widget = Static("", classes="tool-result")
+        self._result_widget.display = False  # Hidden until result is set
         yield self._result_widget
 
     def set_result(self, result: str, is_error: bool = False) -> None:
@@ -103,24 +115,24 @@ class ToolPanel(Collapsible):
         self._result = result
         self._is_error = is_error
 
+        # Hide running status indicator
+        if self._status_widget:
+            self._status_widget.display = False
+
         # Update status
         self.remove_class("running")
         if is_error:
             self.add_class("error")
-            self.title = f" {self._tool_name}"
+            self.title = f"❌ {self._tool_name}"
+            # Show error result
+            if self._result_widget and result:
+                self._result_widget.display = True
+                self._result_widget.update(result)
+                self._result_widget.add_class("error")
         else:
             self.add_class("success")
-            self.title = f" {self._tool_name}"
-
-        # Update result widget
-        if self._result_widget:
-            if result:
+            self.title = f"✓ {self._tool_name}"
+            # Show success result
+            if self._result_widget and result:
+                self._result_widget.display = True
                 self._result_widget.update(result)
-                if is_error:
-                    self._result_widget.add_class("error")
-            else:
-                self._result_widget.display = False
-
-        # Auto-collapse on success
-        if not is_error:
-            self.collapsed = True
