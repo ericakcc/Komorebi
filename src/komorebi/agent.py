@@ -36,8 +36,9 @@ from rich.console import Console
 from rich.prompt import Confirm
 
 from .config import Config, load_config
+from .session import SessionManager
 from .skills import SkillManager, all_tools as skill_tools, set_skill_manager
-from .tools import calendar, planning, project
+from .tools import calendar, memory, planning, project
 
 # Komorebi 專案根目錄
 _KOMOREBI_ROOT = Path(__file__).parent.parent.parent.resolve()
@@ -254,6 +255,7 @@ class KomorebiAgent:
         config_path: Path | None = None,
         model: str = "sonnet",
         max_budget_usd: float | None = None,
+        resume_session: bool = True,
     ) -> None:
         """Initialize agent with configuration.
 
@@ -261,6 +263,7 @@ class KomorebiAgent:
             config_path: Optional path to settings.yaml. Uses defaults if None.
             model: 模型簡稱 (opus/sonnet/haiku) 或完整名稱
             max_budget_usd: 預算上限，超過會拒絕請求
+            resume_session: 是否恢復上次的對話會話
         """
         if config_path and config_path.exists():
             self.config: Config = load_config(config_path)
@@ -273,6 +276,15 @@ class KomorebiAgent:
 
         # 使用量追蹤
         self.usage = UsageStats()
+
+        # Session 管理
+        self._session_manager = SessionManager(self.config.data_dir)
+        self._resume_session = resume_session
+        self._session_id: str | None = None
+
+        # 如果要恢復，載入上次的 session_id
+        if resume_session:
+            self._session_id = self._session_manager.load()
 
         # 初始化 SkillManager
         self._skill_manager = SkillManager(Path(".claude/skills"))
@@ -296,6 +308,7 @@ class KomorebiAgent:
         # 設定工具的資料目錄
         project.set_data_dir(self.config.data_dir)
         planning.set_data_dir(self.config.data_dir)
+        memory.set_memory_file(self.config.data_dir / "memory" / "facts.yaml")
 
         # 設定 calendar 工具
         if self.config.calendar.enabled:
@@ -338,11 +351,19 @@ class KomorebiAgent:
             tools=skill_tools,  # [load_skill]
         )
 
+        # 建立 Memory MCP Server
+        memory_server = create_sdk_mcp_server(
+            name="memory",
+            version="1.0.0",
+            tools=memory.all_tools,  # [get_memory, remember]
+        )
+
         # 組合 MCP servers
         mcp_servers = {
             "project": project_server,
             "planning": planning_server,
             "skill": skill_server,
+            "memory": memory_server,
         }
         if calendar_server:
             mcp_servers["calendar"] = calendar_server
@@ -362,8 +383,12 @@ class KomorebiAgent:
             "mcp__planning__plan_today",
             "mcp__planning__get_today",
             "mcp__planning__end_of_day",
+            "mcp__planning__log_event",
             # Skill 系統（LLM 自主判斷載入）
             "mcp__skill__load_skill",
+            # Memory 系統（語意記憶）
+            "mcp__memory__get_memory",
+            "mcp__memory__remember",
             # 檔案操作（用於 Skill 指引的任務編輯）
             "Read",
             "Edit",
@@ -385,6 +410,8 @@ class KomorebiAgent:
             model=self.model,
             # 預算限制
             max_budget_usd=self.max_budget_usd,
+            # 恢復上次的對話會話
+            resume=self._session_id,
             # 註冊 MCP servers
             mcp_servers=mcp_servers,
             # 允許使用的工具（格式：mcp__<server>__<tool>）
@@ -467,8 +494,11 @@ class KomorebiAgent:
 
         # 接收並處理回應
         async for msg in self._client.receive_response():
-            # SystemMessage: 初始化資訊，通常可以忽略
+            # SystemMessage: 初始化資訊，擷取 session_id
             if isinstance(msg, SystemMessage):
+                # 首次取得 session_id
+                if not self._session_id and hasattr(msg, "session_id"):
+                    self._session_id = msg.session_id
                 continue
 
             # AssistantMessage: Claude 的回應
@@ -503,8 +533,39 @@ class KomorebiAgent:
             if isinstance(msg, ResultMessage):
                 # 更新使用量統計
                 self.usage.update(msg)
+
+                # 保存會話（用於下次恢復）
+                if self._session_id:
+                    self._session_manager.save(self._session_id)
+
                 yield DoneEvent(
                     cost_usd=msg.total_cost_usd or 0,
                     input_tokens=msg.usage.get("input_tokens", 0) if msg.usage else 0,
                     output_tokens=msg.usage.get("output_tokens", 0) if msg.usage else 0,
                 )
+
+    def new_session(self) -> None:
+        """開始新的對話會話。
+
+        清除已保存的 session_id，下次 chat() 時會建立新會話。
+        """
+        self._session_manager.clear()
+        self._session_id = None
+
+    @property
+    def session_info(self) -> dict[str, Any] | None:
+        """取得當前會話資訊。
+
+        Returns:
+            包含 session_id, updated, summary 的 dict，若無則返回 None
+        """
+        return self._session_manager.get_info()
+
+    @property
+    def is_resumed(self) -> bool:
+        """檢查是否為恢復的會話。
+
+        Returns:
+            True 如果是恢復上次的會話
+        """
+        return self._resume_session and self._session_id is not None

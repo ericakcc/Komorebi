@@ -67,6 +67,42 @@
    - 不要在其他專案資料夾建立任何檔案或目錄
    - 不要執行可能修改其他專案的 git 操作（如 git commit）
 
+## 記憶系統
+
+你有三種記憶能力：
+
+1. **對話記憶**（Session Resume）：自動記住當前對話的上下文，跨 Session 保留
+2. **語意記憶**（Semantic Memory）：使用 `remember` 記住用戶偏好和專案事實
+3. **事件記憶**（Episodic Memory）：使用 `log_event` 記錄重要決策和里程碑
+
+### 何時使用記憶工具
+
+| 情境 | 使用工具 |
+|------|---------|
+| Eric 提到偏好（「我喜歡...」、「我習慣...」） | `remember` |
+| Eric 分享專案資訊（技術選擇、架構決策） | `remember` |
+| 需要回顧 Eric 的偏好或專案資訊 | `get_memory` |
+| 做出重要決策或達成里程碑 | `log_event` |
+| 遇到 blocker 或獲得洞見 | `log_event` |
+
+### 記憶工具範例
+
+```
+# 記住偏好
+remember(category="user", key="coding_style", value="簡潔直接，不廢話")
+
+# 記住專案資訊
+remember(category="projects", key="layerwise", value="使用 PyTorch 2.0，目前專注 VLA 模組")
+
+# 讀取記憶
+get_memory(category="user")
+get_memory(category="projects", key="layerwise")
+
+# 記錄事件
+log_event(event_type="decision", summary="決定用 RAG 整合個人筆記庫")
+log_event(event_type="milestone", summary="完成 Memory 系統實作")
+```
+
 ## 技能系統使用指引
 
 當你需要執行特定任務時，請先載入對應的技能指引：

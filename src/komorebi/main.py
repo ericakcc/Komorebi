@@ -53,10 +53,13 @@ async def run_repl(config_path: Path, model: str, max_budget: float | None) -> N
             border_style="blue",
         )
     )
-    console.print(f"[dim]模型: {model} | 輸入 /usage 查看消耗 | exit 離開[/dim]\n")
+    console.print(f"[dim]模型: {model} | /help 顯示指令 | exit 離開[/dim]\n")
 
     # 使用 async with 確保正確管理連線
     async with KomorebiAgent(config_path, model=model, max_budget_usd=max_budget) as agent:
+        # 顯示會話恢復訊息
+        if agent.is_resumed:
+            console.print("[cyan]已恢復上次對話。輸入 /new 開始新對話。[/cyan]\n")
         while True:
             try:
                 # Read: 取得使用者輸入
@@ -72,9 +75,30 @@ async def run_repl(config_path: Path, model: str, max_budget: float | None) -> N
                     console.print(f"[yellow]{agent.usage}[/yellow]\n")
                     continue
 
+                if user_input.lower() == "/new":
+                    agent.new_session()
+                    console.print("[green]已開始新對話，上次的對話記憶已清除。[/green]\n")
+                    continue
+
+                if user_input.lower() == "/session":
+                    info = agent.session_info
+                    if info:
+                        console.print(f"[cyan]Session ID:[/cyan] {info.get('session_id', 'N/A')}")
+                        console.print(f"[cyan]Last Updated:[/cyan] {info.get('updated', 'N/A')}")
+                        if agent.is_resumed:
+                            console.print("[dim]（已恢復上次對話）[/dim]")
+                    else:
+                        console.print("[dim]尚無會話資訊[/dim]")
+                    console.print()
+                    continue
+
                 if user_input.lower() == "/help":
                     console.print(
-                        "[dim]/usage - 查看 API 消耗\n/help  - 顯示幫助\nexit   - 離開[/dim]\n"
+                        "[dim]/usage   - 查看 API 消耗\n"
+                        "/session - 顯示會話資訊\n"
+                        "/new     - 開始新對話\n"
+                        "/help    - 顯示幫助\n"
+                        "exit     - 離開[/dim]\n"
                     )
                     continue
 

@@ -395,5 +395,113 @@ async def end_of_day(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@tool(
+    name="log_event",
+    description="記錄重要事件或決策到今日筆記。用於記錄里程碑、重要決策、blockers 或洞見。",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "event_type": {
+                "type": "string",
+                "enum": ["decision", "milestone", "blocker", "insight"],
+                "description": "事件類型：decision（決策）、milestone（里程碑）、blocker（阻礙）、insight（洞見）",
+            },
+            "summary": {
+                "type": "string",
+                "description": "事件摘要（簡短描述）",
+            },
+            "details": {
+                "type": "string",
+                "description": "詳細內容（可選，補充說明）",
+            },
+        },
+        "required": ["event_type", "summary"],
+    },
+)
+async def log_event(args: dict[str, Any]) -> dict[str, Any]:
+    """記錄事件到每日筆記的重要事件區塊。
+
+    Args:
+        args: Dictionary containing:
+            - event_type: 事件類型 (decision/milestone/blocker/insight)
+            - summary: 事件摘要
+            - details: 詳細內容（可選）
+
+    Returns:
+        Tool response confirming the event was logged.
+    """
+    event_type = args.get("event_type", "insight")
+    summary = args.get("summary", "")
+    details = args.get("details", "")
+
+    if not summary:
+        return {
+            "content": [{"type": "text", "text": "請提供事件摘要。"}],
+            "is_error": True,
+        }
+
+    # 取得今日筆記
+    today = datetime.now()
+    daily_dir = _get_daily_dir()
+    daily_dir.mkdir(parents=True, exist_ok=True)
+    daily_file = daily_dir / f"{today.strftime('%Y-%m-%d')}.md"
+
+    # 讀取或建立基本結構
+    if daily_file.exists():
+        content = daily_file.read_text(encoding="utf-8")
+    else:
+        # 建立基本的每日筆記（僅包含 frontmatter 和事件區塊）
+        content = f"""---
+date: {today.strftime("%Y-%m-%d")}
+created_at: "{today.isoformat()}"
+---
+
+# {today.strftime("%Y-%m-%d")} ({_get_weekday_name(today)})
+
+"""
+
+    # 新增事件區塊（如果不存在）
+    if "## 重要事件" not in content:
+        content += "\n## 重要事件\n"
+
+    # 格式化事件
+    time_str = today.strftime("%H:%M")
+    type_emoji = {
+        "decision": "**Decision**",
+        "milestone": "**Milestone**",
+        "blocker": "**Blocker**",
+        "insight": "**Insight**",
+    }
+    event_label = type_emoji.get(event_type, "**Event**")
+
+    event_entry = f"- [{time_str}] {event_label}: {summary}"
+    if details:
+        event_entry += f"\n  - {details}"
+    event_entry += "\n"
+
+    # 插入到事件區塊末尾
+    if "## 重要事件\n" in content:
+        # 找到事件區塊的結束位置（下一個 ## 或檔案結尾）
+        events_start = content.find("## 重要事件\n") + len("## 重要事件\n")
+        rest = content[events_start:]
+
+        # 找下一個 section
+        next_section = rest.find("\n## ")
+        if next_section == -1:
+            # 沒有下一個 section，直接加到結尾
+            content = content.rstrip() + "\n" + event_entry
+        else:
+            # 在下一個 section 前插入
+            insert_pos = events_start + next_section
+            content = content[:insert_pos] + event_entry + content[insert_pos:]
+
+    # 寫入檔案
+    daily_file.write_text(content, encoding="utf-8")
+
+    return {
+        "content": [{"type": "text", "text": f"已記錄 {event_type}：{summary}"}],
+    }
+
+
 # 匯出所有工具，方便 agent.py 使用
-all_tools = [plan_today, get_today, end_of_day]
+all_tools = [plan_today, get_today, end_of_day, log_event]
