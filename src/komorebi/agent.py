@@ -36,6 +36,7 @@ from rich.console import Console
 from rich.prompt import Confirm
 
 from .config import Config, load_config
+from .skills import SkillManager, all_tools as skill_tools, set_skill_manager
 from .tools import calendar, planning, project
 
 # Komorebi 專案根目錄
@@ -273,6 +274,11 @@ class KomorebiAgent:
         # 使用量追蹤
         self.usage = UsageStats()
 
+        # 初始化 SkillManager
+        self._skill_manager = SkillManager(Path(".claude/skills"))
+        self._skill_manager.discover()
+        set_skill_manager(self._skill_manager)
+
         self._client: ClaudeSDKClient | None = None
         self._options: ClaudeAgentOptions = self._build_options()
 
@@ -325,10 +331,18 @@ class KomorebiAgent:
                 tools=calendar.all_tools,  # [list_events, add_event]
             )
 
+        # 建立 Skill MCP Server
+        skill_server = create_sdk_mcp_server(
+            name="skill",
+            version="1.0.0",
+            tools=skill_tools,  # [load_skill]
+        )
+
         # 組合 MCP servers
         mcp_servers = {
             "project": project_server,
             "planning": planning_server,
+            "skill": skill_server,
         }
         if calendar_server:
             mcp_servers["calendar"] = calendar_server
@@ -345,8 +359,8 @@ class KomorebiAgent:
             "mcp__planning__plan_today",
             "mcp__planning__get_today",
             "mcp__planning__end_of_day",
-            # Skill 支援（用於載入 project-manager 等技能）
-            "Skill",
+            # Skill 系統（LLM 自主判斷載入）
+            "mcp__skill__load_skill",
             # 檔案操作（用於 Skill 指引的任務編輯）
             "Read",
             "Edit",
@@ -376,13 +390,23 @@ class KomorebiAgent:
     def _load_system_prompt(self) -> str:
         """Load system prompt from prompts/system.md.
 
+        會自動注入可用的 skill 清單到 system prompt 結尾。
+
         Returns:
             System prompt string, or default if file not found.
         """
         prompt_file = Path("prompts/system.md")
         if prompt_file.exists():
-            return prompt_file.read_text(encoding="utf-8")
-        return "你是 Komorebi，Eric 的個人執行助理。請用繁體中文回答。"
+            prompt = prompt_file.read_text(encoding="utf-8")
+        else:
+            prompt = "你是 Komorebi，Eric 的個人執行助理。請用繁體中文回答。"
+
+        # 注入 skill 清單
+        skill_list = self._skill_manager.get_skill_list_prompt()
+        if skill_list:
+            prompt += f"\n\n{skill_list}"
+
+        return prompt
 
     async def __aenter__(self) -> "KomorebiAgent":
         """Enter async context and create client.

@@ -72,12 +72,16 @@ def extract_tasks_from_content(content: str) -> tuple[str, str]:
             tasks_lines.append(f"- [x] {task} ({date_str})")
         tasks_lines.append("")
 
-    tasks_content = "\n".join(tasks_lines) if tasks_lines else """## In Progress
+    tasks_content = (
+        "\n".join(tasks_lines)
+        if tasks_lines
+        else """## In Progress
 
 ## Pending
 
 ## Completed
 """
+    )
 
     return tasks_content, content
 
@@ -164,7 +168,7 @@ def main() -> None:
         print(f"Error: Projects directory not found: {projects_dir}")
         return
 
-    print(f"=== Project Migration Tool ===")
+    print("=== Project Migration Tool ===")
     print(f"Projects directory: {projects_dir}")
     print()
 
@@ -198,7 +202,7 @@ def main() -> None:
             migrated += 1
 
     print()
-    print(f"=== Migration Complete ===")
+    print("=== Migration Complete ===")
     print(f"Migrated: {migrated}/{len(md_files)} projects")
 
     # List final structure
