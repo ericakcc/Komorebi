@@ -19,6 +19,10 @@ COMMANDS = [
     ("/projects", "List all tracked projects"),
     ("/sync", "Sync project info from repo (usage: /sync <name>)"),
     ("/today", "Show today's plan"),
+    ("/plan", "Enter Plan Mode (or use Shift+Tab)"),
+    ("/approve", "Approve plan and switch to Execute Mode"),
+    ("/reject", "Reject plan and exit Plan Mode"),
+    ("/mode", "Show current mode status"),
     ("/exit", "Exit application"),
 ]
 

@@ -42,6 +42,10 @@ async def handle_command(screen: "ChatScreen", message: str) -> None:
         "/sync": _handle_sync,
         "/projects": _handle_projects,
         "/today": _handle_today,
+        "/plan": _handle_plan,
+        "/approve": _handle_approve,
+        "/reject": _handle_reject,
+        "/mode": _handle_mode,
     }
 
     handler = handlers.get(command)
@@ -64,6 +68,10 @@ async def _handle_help(screen: "ChatScreen", args: str) -> None:
 | `/sync <project>` | Sync project information |
 | `/projects` | List all projects |
 | `/today` | Show today's plan |
+| `/plan <task>` | Enter Plan Mode (or use Shift+Tab) |
+| `/approve` | Approve plan and execute |
+| `/reject` | Reject plan and exit Plan Mode |
+| `/mode` | Show current mode status |
 
 ## Keyboard Shortcuts
 
@@ -71,6 +79,7 @@ async def _handle_help(screen: "ChatScreen", args: str) -> None:
 |-----|--------|
 | `Enter` | Send message |
 | `Shift+Enter` | Insert newline |
+| `Shift+Tab` | Enter Plan Mode |
 | `Ctrl+C` | Quit |
 | `Ctrl+L` | Clear chat |
 | `PageUp/PageDown` | Scroll history |
@@ -118,3 +127,41 @@ async def _handle_today(screen: "ChatScreen", args: str) -> None:
     """Show today's plan."""
     screen._add_user_message("/today")
     screen.run_worker(screen._process_chat("Show me today's plan"), exclusive=True)
+
+
+async def _handle_plan(screen: "ChatScreen", args: str) -> None:
+    """Enter Plan Mode."""
+    task = args.strip()
+    if not task:
+        # No task provided, show modal
+        from .widgets import PlanInputModal
+
+        screen.app.push_screen(PlanInputModal(), screen._on_plan_task_entered)
+    else:
+        # Task provided directly
+        screen.enter_plan_mode(task)
+
+
+async def _handle_approve(screen: "ChatScreen", args: str) -> None:
+    """Approve plan and execute."""
+    if not screen.plan_mode:
+        screen._add_error_message(
+            "Not in Plan Mode. Use `/plan` or Shift+Tab to enter Plan Mode first."
+        )
+        return
+
+    screen.exit_plan_mode(approved=True)
+
+
+async def _handle_reject(screen: "ChatScreen", args: str) -> None:
+    """Reject plan and exit Plan Mode."""
+    if not screen.plan_mode:
+        screen._add_error_message("Not in Plan Mode. Nothing to reject.")
+        return
+
+    screen.exit_plan_mode(approved=False)
+
+
+async def _handle_mode(screen: "ChatScreen", args: str) -> None:
+    """Show current mode status."""
+    screen.show_mode_status()

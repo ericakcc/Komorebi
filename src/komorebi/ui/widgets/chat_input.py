@@ -75,6 +75,11 @@ class ChatInput(TextArea):
 
         pass
 
+    class PlanModeRequested(Message):
+        """Posted when user requests Plan Mode (Shift+Tab)."""
+
+        pass
+
     # Track if command palette is showing
     palette_visible: reactive[bool] = reactive(False)
 
@@ -113,6 +118,13 @@ class ChatInput(TextArea):
         Args:
             event: Key event.
         """
+        # Handle Shift+Tab for Plan Mode
+        if event.key == "shift+tab":
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.PlanModeRequested())
+            return
+
         if event.key == "enter":
             event.prevent_default()
             event.stop()

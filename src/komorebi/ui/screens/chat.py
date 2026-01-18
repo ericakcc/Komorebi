@@ -12,8 +12,17 @@ from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Static
 
+from textual.reactive import reactive
+
 from ..commands import handle_command, is_command
-from ..widgets import ChatInput, CommandPalette, MessageView, ThinkingIndicator, ToolPanel
+from ..widgets import (
+    ChatInput,
+    CommandPalette,
+    MessageView,
+    PlanInputModal,
+    ThinkingIndicator,
+    ToolPanel,
+)
 from ...agent import (
     DoneEvent,
     KomorebiAgent,
@@ -78,7 +87,7 @@ class SmoothScroll(VerticalScroll):
 
 
 class StatusBar(Static):
-    """Bottom status bar showing token statistics."""
+    """Bottom status bar showing token statistics and mode indicator."""
 
     DEFAULT_CSS = """
     StatusBar {
@@ -88,6 +97,11 @@ class StatusBar(Static):
         color: $text-muted;
         padding: 0 1;
     }
+
+    StatusBar.plan-mode {
+        background: $warning;
+        color: $text;
+    }
     """
 
     def __init__(self) -> None:
@@ -96,6 +110,8 @@ class StatusBar(Static):
         self._cost: float = 0.0
         self._input_tokens: int = 0
         self._output_tokens: int = 0
+        self._plan_mode: bool = False
+        self._plan_task: str = ""
 
     def update_stats(self, cost: float, input_tokens: int, output_tokens: int) -> None:
         """Update statistics display.
@@ -110,14 +126,36 @@ class StatusBar(Static):
         self._output_tokens += output_tokens
         self._refresh_display()
 
+    def set_plan_mode(self, active: bool, task: str = "") -> None:
+        """Set plan mode state.
+
+        Args:
+            active: Whether plan mode is active.
+            task: The task description for plan mode.
+        """
+        self._plan_mode = active
+        self._plan_task = task
+        if active:
+            self.add_class("plan-mode")
+        else:
+            self.remove_class("plan-mode")
+        self._refresh_display()
+
     def _refresh_display(self) -> None:
         """Refresh the status bar text."""
-        self.update(
-            f" ${self._cost:.4f} | "
-            f" {self._input_tokens:,} | "
-            f" {self._output_tokens:,} | "
-            "/help for commands"
-        )
+        if self._plan_mode:
+            # Truncate task if too long
+            task_display = (
+                self._plan_task[:40] + "..." if len(self._plan_task) > 40 else self._plan_task
+            )
+            self.update(f" PLAN MODE | {task_display} | ${self._cost:.4f} | /approve or /reject")
+        else:
+            self.update(
+                f" ${self._cost:.4f} | "
+                f" {self._input_tokens:,} | "
+                f" {self._output_tokens:,} | "
+                "/help for commands"
+            )
 
 
 class ChatScreen(Screen):
@@ -149,10 +187,18 @@ class ChatScreen(Screen):
         margin: 0 1 1 1;
     }
 
+    #chat-input.plan-mode {
+        border: solid $warning;
+    }
+
     .message-container {
         margin-bottom: 1;
     }
     """
+
+    # Plan mode state
+    plan_mode: reactive[bool] = reactive(False)
+    plan_task: reactive[str] = reactive("")
 
     def __init__(self) -> None:
         """Initialize chat screen."""
@@ -284,6 +330,26 @@ class ChatScreen(Screen):
             chat_input.palette_visible = False
             event.stop()
             event.prevent_default()
+
+    def on_chat_input_plan_mode_requested(self, event: ChatInput.PlanModeRequested) -> None:
+        """Handle Shift+Tab to enter plan mode.
+
+        Args:
+            event: The plan mode requested event.
+        """
+        # Show modal to get task description
+        self.app.push_screen(PlanInputModal(), self._on_plan_task_entered)
+
+    def _on_plan_task_entered(self, task: str | None) -> None:
+        """Callback when plan task is entered from modal.
+
+        Args:
+            task: The task description, or None if cancelled.
+        """
+        if task:
+            self.enter_plan_mode(task)
+        # Refocus input
+        self.query_one("#chat-input", ChatInput).focus()
 
     def on_chat_input_enter_pressed(self, event: ChatInput.EnterPressed) -> None:
         """Handle Enter key when palette is visible."""
@@ -485,3 +551,73 @@ class ChatScreen(Screen):
         """Show API usage statistics."""
         if self._agent:
             self._add_system_message(str(self._agent.usage))
+
+    def enter_plan_mode(self, task: str) -> None:
+        """Enter plan mode with the given task.
+
+        Args:
+            task: The task to plan for.
+        """
+        self.plan_mode = True
+        self.plan_task = task
+
+        # Update UI
+        chat_input = self.query_one("#chat-input", ChatInput)
+        chat_input.add_class("plan-mode")
+
+        status_bar = self.query_one(StatusBar)
+        status_bar.set_plan_mode(True, task)
+
+        self._add_system_message(
+            f"**Entered Plan Mode**\n\n"
+            f"Task: {task}\n\n"
+            f"Write tools are disabled. Use `/approve` to execute the plan or `/reject` to cancel."
+        )
+
+        # Send initial planning message to agent
+        self.run_worker(
+            self._process_chat(
+                f"[Plan Mode] Task: {task}\n\nPlease create a detailed plan for this task. Do NOT make any changes yet - only provide a plan."
+            ),
+            exclusive=True,
+        )
+
+    def exit_plan_mode(self, approved: bool = False) -> None:
+        """Exit plan mode.
+
+        Args:
+            approved: Whether the plan was approved (True) or rejected (False).
+        """
+        task = self.plan_task
+        self.plan_mode = False
+        self.plan_task = ""
+
+        # Update UI
+        chat_input = self.query_one("#chat-input", ChatInput)
+        chat_input.remove_class("plan-mode")
+
+        status_bar = self.query_one(StatusBar)
+        status_bar.set_plan_mode(False)
+
+        if approved:
+            self._add_system_message("**Plan Approved** - Switching to Execute Mode.")
+            # Send approval message to agent
+            self.run_worker(
+                self._process_chat(
+                    f"[Execute Mode] The plan for '{task}' has been approved. Please proceed with the implementation."
+                ),
+                exclusive=True,
+            )
+        else:
+            self._add_system_message("**Plan Rejected** - Exited Plan Mode.")
+
+    def show_mode_status(self) -> None:
+        """Show current mode status."""
+        if self.plan_mode:
+            self._add_system_message(
+                f"**Current Mode:** Plan Mode\n"
+                f"**Task:** {self.plan_task}\n\n"
+                f"Use `/approve` to execute or `/reject` to cancel."
+            )
+        else:
+            self._add_system_message("**Current Mode:** Normal Mode")
