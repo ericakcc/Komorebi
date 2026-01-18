@@ -28,10 +28,14 @@ if TYPE_CHECKING:
 
 
 class SmoothScroll(VerticalScroll):
-    """VerticalScroll with controlled scroll speed and throttling."""
+    """VerticalScroll with aggressive throttling for Mac trackpad.
+
+    Mac trackpads generate 40+ events per gesture with momentum scrolling.
+    This class uses throttling (250ms) to make scrolling controllable.
+    """
 
     SCROLL_AMOUNT = 1  # Lines per scroll event
-    SCROLL_THROTTLE = 0.05  # Minimum seconds between scroll events (50ms)
+    SCROLL_THROTTLE = 0.25  # 250ms between scroll events
 
     def __init__(self, *args, **kwargs) -> None:
         """Initialize with scroll throttle tracking."""
@@ -39,32 +43,38 @@ class SmoothScroll(VerticalScroll):
         self._last_scroll_time: float = 0.0
 
     def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
-        """Completely override scroll down handling with throttling."""
+        """Handle scroll down with aggressive throttling."""
         import time
 
         now = time.monotonic()
         if now - self._last_scroll_time < self.SCROLL_THROTTLE:
             event.stop()
+            event.prevent_default()
             return
+
         self._last_scroll_time = now
 
         if self.allow_vertical_scroll:
             self.scroll_relative(y=self.SCROLL_AMOUNT, animate=False)
-            event.stop()
+        event.stop()
+        event.prevent_default()
 
     def _on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
-        """Completely override scroll up handling with throttling."""
+        """Handle scroll up with aggressive throttling."""
         import time
 
         now = time.monotonic()
         if now - self._last_scroll_time < self.SCROLL_THROTTLE:
             event.stop()
+            event.prevent_default()
             return
+
         self._last_scroll_time = now
 
         if self.allow_vertical_scroll:
             self.scroll_relative(y=-self.SCROLL_AMOUNT, animate=False)
-            event.stop()
+        event.stop()
+        event.prevent_default()
 
 
 class StatusBar(Static):
