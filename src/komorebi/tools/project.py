@@ -7,11 +7,14 @@
 - 錯誤時加上 "is_error": True
 - 使用 Pydantic BaseModel 驗證工具輸入
 
-這些工具用於讀寫 data/projects/*.md 檔案。
+這些工具支援雙模式專案結構：
+- 檔案模式：data/projects/komorebi.md（舊版）
+- 資料夾模式：data/projects/komorebi/project.md + tasks.md（新版）
 """
 
 import asyncio
 import logging
+import re
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -85,18 +88,245 @@ def _get_projects_dir() -> Path:
     return _data_dir / "projects"
 
 
+# ============================================================================
+# Dual-Mode Path Helpers
+# ============================================================================
+
+
+def _is_folder_mode(project_name: str) -> bool:
+    """Check if a project uses folder mode.
+
+    Args:
+        project_name: Project name (case-insensitive).
+
+    Returns:
+        True if project uses folder mode (has project.md inside folder).
+    """
+    projects_dir = _get_projects_dir()
+
+    # Check for folder mode: projects/komorebi/project.md
+    folder_path = projects_dir / project_name.lower()
+    if folder_path.is_dir() and (folder_path / "project.md").exists():
+        return True
+
+    return False
+
+
+def _get_project_path(project_name: str) -> Path | None:
+    """Get the project.md path for a project (supports both modes).
+
+    Args:
+        project_name: Project name (case-insensitive).
+
+    Returns:
+        Path to project.md or None if not found.
+    """
+    projects_dir = _get_projects_dir()
+    name_lower = project_name.lower()
+
+    # Priority 1: Folder mode (projects/komorebi/project.md)
+    folder_path = projects_dir / name_lower / "project.md"
+    if folder_path.exists():
+        return folder_path
+
+    # Priority 2: File mode (projects/komorebi.md)
+    for md_file in projects_dir.glob("*.md"):
+        if md_file.stem.lower() == name_lower:
+            return md_file
+
+    return None
+
+
+def _get_tasks_path(project_name: str) -> Path | None:
+    """Get the tasks.md path for a project (folder mode only).
+
+    Args:
+        project_name: Project name (case-insensitive).
+
+    Returns:
+        Path to tasks.md or None if not in folder mode.
+    """
+    projects_dir = _get_projects_dir()
+    tasks_path = projects_dir / project_name.lower() / "tasks.md"
+    return tasks_path if tasks_path.exists() else None
+
+
+def _get_project_folder(project_name: str) -> Path | None:
+    """Get the project folder path (folder mode only).
+
+    Args:
+        project_name: Project name (case-insensitive).
+
+    Returns:
+        Path to project folder or None if not in folder mode.
+    """
+    projects_dir = _get_projects_dir()
+    folder_path = projects_dir / project_name.lower()
+    return folder_path if folder_path.is_dir() else None
+
+
+def _iter_all_projects() -> list[tuple[str, Path, bool]]:
+    """Iterate over all projects, both file and folder mode.
+
+    Returns:
+        List of (project_name, project_md_path, is_folder_mode) tuples.
+    """
+    projects_dir = _get_projects_dir()
+    results: list[tuple[str, Path, bool]] = []
+
+    if not projects_dir.exists():
+        return results
+
+    # Collect folder mode projects
+    for item in projects_dir.iterdir():
+        if item.is_dir():
+            project_md = item / "project.md"
+            if project_md.exists():
+                results.append((item.name, project_md, True))
+
+    # Collect file mode projects (exclude those already in folder mode)
+    folder_names = {r[0] for r in results}
+    for md_file in projects_dir.glob("*.md"):
+        if md_file.stem.lower() not in folder_names:
+            results.append((md_file.stem, md_file, False))
+
+    return results
+
+
+# ============================================================================
+# Task Parsing Utilities
+# ============================================================================
+
+
+def _parse_tasks(tasks_content: str) -> dict[str, list[dict[str, Any]]]:
+    """Parse tasks.md content into structured data.
+
+    Args:
+        tasks_content: Content of tasks.md file.
+
+    Returns:
+        Dictionary with 'in_progress', 'pending', 'completed' lists.
+    """
+    result: dict[str, list[dict[str, Any]]] = {
+        "in_progress": [],
+        "pending": [],
+        "completed": [],
+    }
+
+    current_section = "pending"
+    section_map = {
+        "進行中": "in_progress",
+        "in progress": "in_progress",
+        "待處理": "pending",
+        "pending": "pending",
+        "todo": "pending",
+        "已完成": "completed",
+        "completed": "completed",
+        "done": "completed",
+    }
+
+    # Parse task line: - [ ] task text #tag @today (2026-01-18)
+    task_pattern = re.compile(
+        r"^-\s*\[([ xX])\]\s*"  # checkbox
+        r"(.+?)"  # task text
+        r"(?:\s*\((\d{4}-\d{2}-\d{2})\))?\s*$"  # optional date
+    )
+
+    for line in tasks_content.split("\n"):
+        line = line.strip()
+
+        # Check for section headers
+        if line.startswith("## "):
+            section_name = line[3:].strip().lower()
+            if section_name in section_map:
+                current_section = section_map[section_name]
+            continue
+
+        # Check for task lines
+        match = task_pattern.match(line)
+        if match:
+            checked = match.group(1).lower() == "x"
+            text = match.group(2).strip()
+            completed_date = match.group(3)
+
+            # Extract tags (#tag)
+            tags = re.findall(r"#(\S+)", text)
+            text_clean = re.sub(r"\s*#\S+", "", text).strip()
+
+            # Check for @today marker
+            is_today = "@today" in text
+            text_clean = text_clean.replace("@today", "").strip()
+
+            task = {
+                "text": text_clean,
+                "completed": checked,
+                "tags": tags,
+                "is_today": is_today,
+            }
+            if completed_date:
+                task["completed_date"] = completed_date
+
+            # Put in appropriate section based on checkbox state
+            if checked:
+                result["completed"].append(task)
+            else:
+                result[current_section].append(task)
+
+    return result
+
+
+def _count_tasks(project_path: Path) -> dict[str, int]:
+    """Count tasks for a project (supports both modes).
+
+    Args:
+        project_path: Path to project.md file.
+
+    Returns:
+        Dictionary with task counts.
+    """
+    counts = {"total": 0, "completed": 0, "in_progress": 0, "pending": 0}
+
+    # Check if this is folder mode
+    if project_path.name == "project.md":
+        tasks_path = project_path.parent / "tasks.md"
+        if tasks_path.exists():
+            tasks = _parse_tasks(tasks_path.read_text(encoding="utf-8"))
+            counts["in_progress"] = len(tasks["in_progress"])
+            counts["pending"] = len(tasks["pending"])
+            counts["completed"] = len(tasks["completed"])
+            counts["total"] = sum(counts.values()) - counts["completed"]
+            counts["total"] += counts["completed"]
+
+    return counts
+
+
+def _calculate_progress(project_path: Path) -> int:
+    """Calculate progress percentage for a project.
+
+    Args:
+        project_path: Path to project.md file.
+
+    Returns:
+        Progress percentage (0-100).
+    """
+    counts = _count_tasks(project_path)
+    if counts["total"] == 0:
+        return 0
+    return int((counts["completed"] / counts["total"]) * 100)
+
+
 @tool(
     name="list_projects",
-    description="列出所有專案及其狀態。回傳專案名稱、狀態、優先順序等摘要資訊。",
+    description="列出所有專案及其狀態、進度統計。回傳專案名稱、狀態、優先順序、任務完成率等摘要資訊。",
     input_schema={},  # 無參數
 )
 async def list_projects(args: dict[str, Any]) -> dict[str, Any]:
-    """List all projects from data/projects/*.md files.
+    """List all projects with statistics (supports both file and folder mode).
 
-    讀取每個 markdown 檔案的 frontmatter 來取得專案資訊。
+    讀取每個專案的 frontmatter 和任務統計資訊。
 
     Returns:
-        Tool response with formatted project list.
+        Tool response with formatted project list and statistics.
     """
     projects_dir = _get_projects_dir()
 
@@ -110,35 +340,46 @@ async def list_projects(args: dict[str, Any]) -> dict[str, Any]:
 
     projects: list[dict[str, Any]] = []
 
-    for md_file in projects_dir.glob("*.md"):
+    for name, project_path, is_folder in _iter_all_projects():
         try:
-            post = frontmatter.load(md_file)
+            post = frontmatter.load(project_path)
+            task_counts = _count_tasks(project_path)
+
             projects.append(
                 {
-                    "name": post.get("name", md_file.stem),
+                    "name": post.get("name", name),
+                    "type": post.get("type", "software"),
                     "status": post.get("status", "unknown"),
                     "priority": post.get("priority", 999),
-                    "file": md_file.name,
+                    "progress": post.get("progress", _calculate_progress(project_path)),
+                    "is_folder": is_folder,
+                    "tasks": task_counts,
                 }
             )
         except (OSError, IOError) as e:
-            logger.warning(f"Failed to read {md_file}: {e}")
+            logger.warning(f"Failed to read {project_path}: {e}")
             projects.append(
                 {
-                    "name": md_file.stem,
+                    "name": name,
+                    "type": "unknown",
                     "status": "error: file read failed",
                     "priority": 999,
-                    "file": md_file.name,
+                    "progress": 0,
+                    "is_folder": is_folder,
+                    "tasks": {"total": 0, "completed": 0},
                 }
             )
         except (KeyError, ValueError) as e:
-            logger.warning(f"Failed to parse frontmatter in {md_file}: {e}")
+            logger.warning(f"Failed to parse frontmatter in {project_path}: {e}")
             projects.append(
                 {
-                    "name": md_file.stem,
+                    "name": name,
+                    "type": "unknown",
                     "status": "error: invalid format",
                     "priority": 999,
-                    "file": md_file.name,
+                    "progress": 0,
+                    "is_folder": is_folder,
+                    "tasks": {"total": 0, "completed": 0},
                 }
             )
 
@@ -160,7 +401,18 @@ async def list_projects(args: dict[str, Any]) -> dict[str, Any]:
             "archived": "📦",
         }.get(p["status"], "❓")
 
-        lines.append(f"- {status_emoji} **{p['name']}** ({p['status']})")
+        # Build stats string
+        stats_parts = []
+        if p["tasks"]["total"] > 0:
+            stats_parts.append(f"{p['tasks']['completed']}/{p['tasks']['total']} tasks")
+        if p["progress"] > 0:
+            stats_parts.append(f"{p['progress']}%")
+        stats = f" | {', '.join(stats_parts)}" if stats_parts else ""
+
+        # Mode indicator
+        mode = "📁" if p["is_folder"] else "📄"
+
+        lines.append(f"- {status_emoji} {mode} **{p['name']}** ({p['status']}){stats}")
 
     return {
         "content": [{"type": "text", "text": "\n".join(lines)}],
@@ -169,13 +421,15 @@ async def list_projects(args: dict[str, Any]) -> dict[str, Any]:
 
 @tool(
     name="show_project",
-    description="顯示單一專案的完整資訊，包含目標、技術棧、進度、blockers 等詳細內容。",
+    description="顯示單一專案的完整資訊，包含目標、技術棧、進度、任務清單等詳細內容。支援檔案和資料夾兩種模式。",
     input_schema=ShowProjectInput.model_json_schema(),
 )
 async def show_project(args: dict[str, Any]) -> dict[str, Any]:
     """Show detailed information about a specific project.
 
-    讀取並回傳完整的專案 markdown 檔案內容。
+    支援雙模式：
+    - 檔案模式：回傳 project.md 內容
+    - 資料夾模式：回傳 project.md + tasks.md 內容
 
     Args:
         args: Dictionary containing 'name' - the project name (case-insensitive).
@@ -192,19 +446,11 @@ async def show_project(args: dict[str, Any]) -> dict[str, Any]:
         }
 
     name = validated.name
+    project_path = _get_project_path(name)
 
-    projects_dir = _get_projects_dir()
-
-    # 嘗試找到匹配的檔案（不分大小寫）
-    project_file = None
-    for md_file in projects_dir.glob("*.md"):
-        if md_file.stem.lower() == name.lower():
-            project_file = md_file
-            break
-
-    if not project_file or not project_file.exists():
+    if not project_path:
         # 列出可用的專案
-        available = [f.stem for f in projects_dir.glob("*.md")]
+        available = [p[0] for p in _iter_all_projects()]
         return {
             "content": [
                 {
@@ -215,21 +461,121 @@ async def show_project(args: dict[str, Any]) -> dict[str, Any]:
             "is_error": True,
         }
 
-    content = project_file.read_text(encoding="utf-8")
+    # Read project.md
+    content = project_path.read_text(encoding="utf-8")
+
+    # Check if folder mode - include tasks.md if exists
+    is_folder = project_path.name == "project.md"
+    if is_folder:
+        tasks_path = project_path.parent / "tasks.md"
+        if tasks_path.exists():
+            tasks_content = tasks_path.read_text(encoding="utf-8")
+            content += f"\n\n---\n\n# 任務清單 (tasks.md)\n\n{tasks_content}"
+
+        # Add folder info
+        folder_path = project_path.parent
+        files = list(folder_path.iterdir())
+        content += f"\n\n---\n\n**專案資料夾**: `{folder_path}`\n"
+        content += f"**檔案**: {', '.join(f.name for f in files)}"
+
     return {
         "content": [{"type": "text", "text": content}],
     }
 
 
 @tool(
+    name="get_today_tasks",
+    description="取得今日任務清單（跨所有專案）。掃描所有專案的 tasks.md，找出標記 @today 的任務和進行中的任務。",
+    input_schema={},  # 無參數
+)
+async def get_today_tasks(args: dict[str, Any]) -> dict[str, Any]:
+    """Get today's tasks across all projects.
+
+    掃描所有專案（folder mode）的 tasks.md，找出：
+    1. 標記 @today 的任務
+    2. 進行中的任務
+
+    Returns:
+        Tool response with today's task list.
+    """
+    today_tasks: list[dict[str, Any]] = []
+    in_progress_tasks: list[dict[str, Any]] = []
+
+    for name, project_path, is_folder in _iter_all_projects():
+        if not is_folder:
+            continue  # Only check folder mode projects
+
+        tasks_path = project_path.parent / "tasks.md"
+        if not tasks_path.exists():
+            continue
+
+        try:
+            tasks_content = tasks_path.read_text(encoding="utf-8")
+            parsed = _parse_tasks(tasks_content)
+
+            # Collect @today tasks
+            for task in parsed["pending"] + parsed["in_progress"]:
+                if task.get("is_today"):
+                    today_tasks.append(
+                        {
+                            "project": name,
+                            "text": task["text"],
+                            "tags": task.get("tags", []),
+                            "section": "in_progress"
+                            if task in parsed["in_progress"]
+                            else "pending",
+                        }
+                    )
+
+            # Collect all in-progress tasks
+            for task in parsed["in_progress"]:
+                if not task.get("is_today"):  # Avoid duplicates
+                    in_progress_tasks.append(
+                        {
+                            "project": name,
+                            "text": task["text"],
+                            "tags": task.get("tags", []),
+                        }
+                    )
+
+        except (OSError, IOError) as e:
+            logger.warning(f"Failed to read tasks for {name}: {e}")
+
+    # Format output
+    lines = ["## 今日任務\n"]
+
+    if today_tasks:
+        lines.append("### @today 標記\n")
+        for t in today_tasks:
+            tags = " ".join(f"#{tag}" for tag in t["tags"]) if t["tags"] else ""
+            lines.append(f"- [ ] **{t['project']}**: {t['text']} {tags}")
+    else:
+        lines.append("_沒有標記 @today 的任務_\n")
+
+    if in_progress_tasks:
+        lines.append("\n### 進行中\n")
+        for t in in_progress_tasks:
+            tags = " ".join(f"#{tag}" for tag in t["tags"]) if t["tags"] else ""
+            lines.append(f"- [ ] **{t['project']}**: {t['text']} {tags}")
+
+    if not today_tasks and not in_progress_tasks:
+        lines.append("\n_目前沒有任何進行中或今日待辦的任務。_")
+
+    return {
+        "content": [{"type": "text", "text": "\n".join(lines)}],
+    }
+
+
+@tool(
     name="update_project_status",
-    description="更新專案的狀態（active, paused, completed, archived）。",
+    description="更新專案的狀態（active, paused, completed, archived）。支援檔案和資料夾兩種模式。",
     input_schema=UpdateStatusInput.model_json_schema(),
 )
 async def update_project_status(args: dict[str, Any]) -> dict[str, Any]:
     """Update the status of a project.
 
     修改專案 markdown 檔案的 frontmatter 中的 status 欄位。
+    支援檔案和資料夾兩種模式。
 
     Args:
         args: Dictionary containing 'name' and 'status'.
@@ -253,18 +599,17 @@ async def update_project_status(args: dict[str, Any]) -> dict[str, Any]:
     name = validated.name
     new_status = validated.status.value
 
-    projects_dir = _get_projects_dir()
+    project_file = _get_project_path(name)
 
-    # 找到檔案
-    project_file = None
-    for md_file in projects_dir.glob("*.md"):
-        if md_file.stem.lower() == name.lower():
-            project_file = md_file
-            break
-
-    if not project_file or not project_file.exists():
+    if not project_file:
+        available = [p[0] for p in _iter_all_projects()]
         return {
-            "content": [{"type": "text", "text": f"找不到專案：{name}"}],
+            "content": [
+                {
+                    "type": "text",
+                    "text": f"找不到專案：{name}\n可用的專案：{', '.join(available) if available else '(無)'}",
+                }
+            ],
             "is_error": True,
         }
 
@@ -273,6 +618,7 @@ async def update_project_status(args: dict[str, Any]) -> dict[str, Any]:
         post = frontmatter.load(project_file)
         old_status = post.get("status", "unknown")
         post["status"] = new_status
+        post["updated"] = datetime.now().strftime("%Y-%m-%d")
 
         project_file.write_text(frontmatter.dumps(post), encoding="utf-8")
 
@@ -461,16 +807,11 @@ async def update_project_progress(args: dict[str, Any]) -> dict[str, Any]:
     name = validated.name
     days = validated.days
 
-    # 找到專案檔案
-    projects_dir = _get_projects_dir()
-    project_file = None
-    for md_file in projects_dir.glob("*.md"):
-        if md_file.stem.lower() == name.lower():
-            project_file = md_file
-            break
+    # 找到專案檔案（支援檔案和資料夾兩種模式）
+    project_file = _get_project_path(name)
 
     if not project_file:
-        available = [f.stem for f in projects_dir.glob("*.md")]
+        available = [p[0] for p in _iter_all_projects()]
         return {
             "content": [
                 {
@@ -925,16 +1266,11 @@ async def sync_project(args: dict[str, Any]) -> dict[str, Any]:
     name = validated.name
     force = validated.force
 
-    # Find project file
-    projects_dir = _get_projects_dir()
-    project_file = None
-    for md_file in projects_dir.glob("*.md"):
-        if md_file.stem.lower() == name.lower():
-            project_file = md_file
-            break
+    # Find project file (supports both file and folder mode)
+    project_file = _get_project_path(name)
 
     if not project_file:
-        available = [f.stem for f in projects_dir.glob("*.md")]
+        available = [p[0] for p in _iter_all_projects()]
         return {
             "content": [
                 {
@@ -1045,10 +1381,16 @@ async def sync_project(args: dict[str, Any]) -> dict[str, Any]:
 
 
 # 匯出所有工具，方便 agent.py 使用
+# 精簡版：移除 update_project_progress（改由 Skill 指引直接編輯）
 all_tools = [
     list_projects,
     show_project,
+    get_today_tasks,
+    sync_project,
+]
+
+# 保留但不預設啟用的工具（可由 agent 按需加入）
+optional_tools = [
     update_project_status,
     update_project_progress,
-    sync_project,
 ]

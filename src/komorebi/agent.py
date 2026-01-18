@@ -100,8 +100,6 @@ def format_tool_name(tool_name: str) -> str:
 
 # 需要確認的工具（寫入操作）
 _CONFIRM_TOOLS = {
-    "mcp__project__update_project_status",
-    "mcp__project__update_project_progress",
     "mcp__project__sync_project",
     "mcp__planning__plan_today",
     "mcp__planning__end_of_day",
@@ -335,16 +333,23 @@ class KomorebiAgent:
         if calendar_server:
             mcp_servers["calendar"] = calendar_server
 
-        # 組合 allowed tools
+        # 組合 allowed tools（精簡版：只註冊核心工具）
+        # 任務管理（add/complete/update）改由 Skill 指引直接編輯 tasks.md
         allowed_tools = [
+            # 專案工具（精簡版）
             "mcp__project__list_projects",
             "mcp__project__show_project",
-            "mcp__project__update_project_status",
-            "mcp__project__update_project_progress",
+            "mcp__project__get_today_tasks",
             "mcp__project__sync_project",
+            # 每日規劃
             "mcp__planning__plan_today",
             "mcp__planning__get_today",
             "mcp__planning__end_of_day",
+            # Skill 支援（用於載入 project-manager 等技能）
+            "Skill",
+            # 檔案操作（用於 Skill 指引的任務編輯）
+            "Read",
+            "Edit",
         ]
         if self.config.calendar.enabled:
             allowed_tools.extend(
