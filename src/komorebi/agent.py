@@ -355,6 +355,9 @@ class KomorebiAgent:
             "mcp__project__show_project",
             "mcp__project__get_today_tasks",
             "mcp__project__sync_project",
+            # 回顧系統
+            "mcp__project__weekly_review",
+            "mcp__project__monthly_review",
             # 每日規劃
             "mcp__planning__plan_today",
             "mcp__planning__get_today",

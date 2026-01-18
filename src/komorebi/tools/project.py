@@ -1380,13 +1380,487 @@ async def sync_project(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ============================================================================
+# Review Tools
+# ============================================================================
+
+
+class WeeklyReviewInput(BaseModel):
+    """Input schema for weekly_review tool."""
+
+    week: str | None = Field(
+        default=None,
+        description="週次 (格式: 2026-W03)，預設為本週",
+    )
+
+
+class MonthlyReviewInput(BaseModel):
+    """Input schema for monthly_review tool."""
+
+    month: str | None = Field(
+        default=None,
+        description="月份 (格式: 2026-01)，預設為本月",
+    )
+
+
+def _get_reviews_dir() -> Path:
+    """Get the reviews directory path."""
+    return _data_dir / "reviews"
+
+
+def _get_week_range(week_str: str) -> tuple[datetime, datetime]:
+    """Get start and end dates for a week string (YYYY-Www).
+
+    Args:
+        week_str: Week string like '2026-W03'.
+
+    Returns:
+        Tuple of (start_date, end_date) as datetime objects.
+    """
+    # Parse week string
+    year = int(week_str[:4])
+    week = int(week_str[6:])
+
+    # Get first day of the week (Monday)
+    start = datetime.strptime(f"{year}-W{week:02d}-1", "%Y-W%W-%w")
+    end = start + __import__("datetime").timedelta(days=6)
+
+    return start, end
+
+
+def _get_month_range(month_str: str) -> tuple[datetime, datetime]:
+    """Get start and end dates for a month string (YYYY-MM).
+
+    Args:
+        month_str: Month string like '2026-01'.
+
+    Returns:
+        Tuple of (start_date, end_date) as datetime objects.
+    """
+    import calendar
+
+    year = int(month_str[:4])
+    month = int(month_str[5:7])
+
+    start = datetime(year, month, 1)
+    _, last_day = calendar.monthrange(year, month)
+    end = datetime(year, month, last_day)
+
+    return start, end
+
+
+async def _collect_completed_tasks_in_range(
+    start_date: datetime, end_date: datetime
+) -> dict[str, list[dict[str, Any]]]:
+    """Collect completed tasks within a date range across all projects.
+
+    Args:
+        start_date: Start of the range.
+        end_date: End of the range.
+
+    Returns:
+        Dictionary mapping project name to list of completed tasks.
+    """
+    results: dict[str, list[dict[str, Any]]] = {}
+
+    for name, project_path, is_folder in _iter_all_projects():
+        if not is_folder:
+            continue
+
+        tasks_path = project_path.parent / "tasks.md"
+        if not tasks_path.exists():
+            continue
+
+        try:
+            tasks_content = tasks_path.read_text(encoding="utf-8")
+            parsed = _parse_tasks(tasks_content)
+
+            completed_in_range = []
+            for task in parsed["completed"]:
+                if "completed_date" in task:
+                    task_date = datetime.strptime(task["completed_date"], "%Y-%m-%d")
+                    if start_date <= task_date <= end_date:
+                        completed_in_range.append(task)
+
+            if completed_in_range:
+                results[name] = completed_in_range
+
+        except (OSError, IOError) as e:
+            logger.warning(f"Failed to read tasks for {name}: {e}")
+
+    return results
+
+
+async def _collect_git_commits_in_range(
+    repo_path: Path, start_date: datetime, end_date: datetime
+) -> list[str]:
+    """Collect git commits within a date range.
+
+    Args:
+        repo_path: Path to the repository.
+        start_date: Start of the range.
+        end_date: End of the range.
+
+    Returns:
+        List of commit lines (hash + message).
+    """
+    start_str = start_date.strftime("%Y-%m-%d")
+    end_str = end_date.strftime("%Y-%m-%d")
+
+    log = await _run_git_command(
+        repo_path,
+        ["log", f"--since={start_str}", f"--until={end_str}", "--oneline"],
+    )
+
+    return log.split("\n") if log else []
+
+
+async def _generate_reflection_questions(
+    completed_tasks: dict[str, list[dict[str, Any]]],
+    commits_summary: dict[str, list[str]],
+) -> str:
+    """Use AI to generate reflection questions based on completed work.
+
+    Args:
+        completed_tasks: Completed tasks by project.
+        commits_summary: Git commits by project.
+
+    Returns:
+        AI-generated reflection questions in Traditional Chinese.
+    """
+    # Build summary for AI
+    summary_parts = []
+    for project, tasks in completed_tasks.items():
+        task_texts = [t["text"] for t in tasks]
+        summary_parts.append(f"**{project}** 完成任務: {', '.join(task_texts)}")
+
+    for project, commits in commits_summary.items():
+        if commits:
+            summary_parts.append(f"**{project}** commits: {len(commits)} 筆")
+
+    if not summary_parts:
+        return "- 本週沒有完成的任務，下週有什麼想要達成的目標？"
+
+    prompt = f"""根據以下本週完成的工作，生成 3-5 個反思問題。問題應該幫助使用者：
+1. 回顧本週的成就
+2. 識別學習和成長
+3. 思考下週的優先事項
+
+本週工作摘要：
+{chr(10).join(summary_parts)}
+
+請直接輸出問題，每個問題一行，用 "- " 開頭。繁體中文。"""
+
+    options = ClaudeAgentOptions(model="claude-haiku-3-5-20241022")
+    result_text = ""
+
+    async for message in query(prompt=prompt, options=options):
+        if isinstance(message, ResultMessage):
+            if hasattr(message, "result") and message.result:
+                result_text = message.result
+                break
+
+    return result_text or "- 本週有什麼讓你感到自豪的成就？\n- 下週最重要的一件事是什麼？"
+
+
+@tool(
+    name="weekly_review",
+    description="生成週回顧報告。統計本週完成的任務、git commits，並生成 AI 反思問題。輸出到 data/reviews/weekly/YYYY-Www.md。",
+    input_schema=WeeklyReviewInput.model_json_schema(),
+)
+async def weekly_review(args: dict[str, Any]) -> dict[str, Any]:
+    """Generate weekly review report.
+
+    統計本週完成的任務、各專案 git commits，
+    並使用 AI 生成反思問題。
+
+    Args:
+        args: Dictionary containing optional 'week' (format: 2026-W03).
+
+    Returns:
+        Tool response with review summary and file path.
+    """
+    try:
+        validated = WeeklyReviewInput(**args)
+    except ValueError as e:
+        return {
+            "content": [{"type": "text", "text": f"輸入驗證失敗：{e}"}],
+            "is_error": True,
+        }
+
+    # Determine week
+    if validated.week:
+        week_str = validated.week
+    else:
+        today = datetime.now()
+        week_str = today.strftime("%Y-W%W")
+
+    # Get week range
+    try:
+        start_date, end_date = _get_week_range(week_str)
+    except ValueError:
+        return {
+            "content": [
+                {"type": "text", "text": f"無效的週次格式：{week_str}，請使用 YYYY-Www 格式"}
+            ],
+            "is_error": True,
+        }
+
+    # Collect completed tasks
+    completed_tasks = await _collect_completed_tasks_in_range(start_date, end_date)
+
+    # Collect git commits for each project
+    commits_summary: dict[str, list[str]] = {}
+    for name, project_path, is_folder in _iter_all_projects():
+        post = frontmatter.load(project_path)
+        repo_path_str = post.get("repo", "")
+        if repo_path_str:
+            repo_path = Path(repo_path_str).expanduser()
+            if repo_path.exists():
+                commits = await _collect_git_commits_in_range(repo_path, start_date, end_date)
+                if commits:
+                    commits_summary[name] = commits
+
+    # Generate reflection questions
+    reflection = await _generate_reflection_questions(completed_tasks, commits_summary)
+
+    # Build review content
+    lines = [
+        f"# 週回顧 {week_str}",
+        "",
+        f"**期間**: {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}",
+        f"**生成時間**: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "",
+        "## 完成的任務",
+        "",
+    ]
+
+    if completed_tasks:
+        for project, tasks in completed_tasks.items():
+            lines.append(f"### {project}")
+            for task in tasks:
+                date_str = task.get("completed_date", "")
+                lines.append(f"- [x] {task['text']} ({date_str})")
+            lines.append("")
+    else:
+        lines.append("_本週沒有標記完成的任務_")
+        lines.append("")
+
+    lines.append("## Git Commits 摘要")
+    lines.append("")
+
+    if commits_summary:
+        for project, commits in commits_summary.items():
+            lines.append(f"### {project} ({len(commits)} commits)")
+            for commit in commits[:10]:  # Show first 10
+                lines.append(f"- {commit}")
+            if len(commits) > 10:
+                lines.append(f"- ... 共 {len(commits)} 筆")
+            lines.append("")
+    else:
+        lines.append("_本週沒有 commits_")
+        lines.append("")
+
+    lines.append("## 反思問題")
+    lines.append("")
+    lines.append(reflection)
+    lines.append("")
+
+    # Save to file
+    reviews_dir = _get_reviews_dir() / "weekly"
+    reviews_dir.mkdir(parents=True, exist_ok=True)
+    review_file = reviews_dir / f"{week_str}.md"
+    review_content = "\n".join(lines)
+    review_file.write_text(review_content, encoding="utf-8")
+
+    # Summary for response
+    total_tasks = sum(len(tasks) for tasks in completed_tasks.values())
+    total_commits = sum(len(commits) for commits in commits_summary.values())
+
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": f"""## 週回顧 {week_str} 已生成
+
+**統計**:
+- 完成任務: {total_tasks} 項
+- Git commits: {total_commits} 筆
+- 涵蓋專案: {len(completed_tasks) + len(commits_summary)} 個
+
+**檔案**: `{review_file}`
+
+{reflection}""",
+            }
+        ],
+    }
+
+
+@tool(
+    name="monthly_review",
+    description="生成月回顧報告。統計本月專案進度、成就清單、學習紀錄。輸出到 data/reviews/monthly/YYYY-MM.md。",
+    input_schema=MonthlyReviewInput.model_json_schema(),
+)
+async def monthly_review(args: dict[str, Any]) -> dict[str, Any]:
+    """Generate monthly review report.
+
+    統計本月專案進度總覽、月度成就清單、學習與成長紀錄。
+
+    Args:
+        args: Dictionary containing optional 'month' (format: 2026-01).
+
+    Returns:
+        Tool response with review summary and file path.
+    """
+    try:
+        validated = MonthlyReviewInput(**args)
+    except ValueError as e:
+        return {
+            "content": [{"type": "text", "text": f"輸入驗證失敗：{e}"}],
+            "is_error": True,
+        }
+
+    # Determine month
+    if validated.month:
+        month_str = validated.month
+    else:
+        today = datetime.now()
+        month_str = today.strftime("%Y-%m")
+
+    # Get month range
+    try:
+        start_date, end_date = _get_month_range(month_str)
+    except ValueError:
+        return {
+            "content": [
+                {"type": "text", "text": f"無效的月份格式：{month_str}，請使用 YYYY-MM 格式"}
+            ],
+            "is_error": True,
+        }
+
+    # Collect completed tasks
+    completed_tasks = await _collect_completed_tasks_in_range(start_date, end_date)
+
+    # Collect project progress
+    project_progress: list[dict[str, Any]] = []
+    commits_summary: dict[str, list[str]] = {}
+
+    for name, project_path, is_folder in _iter_all_projects():
+        post = frontmatter.load(project_path)
+        task_counts = _count_tasks(project_path)
+
+        project_info = {
+            "name": post.get("name", name),
+            "status": post.get("status", "unknown"),
+            "progress": post.get("progress", _calculate_progress(project_path)),
+            "tasks": task_counts,
+        }
+        project_progress.append(project_info)
+
+        # Collect git commits
+        repo_path_str = post.get("repo", "")
+        if repo_path_str:
+            repo_path = Path(repo_path_str).expanduser()
+            if repo_path.exists():
+                commits = await _collect_git_commits_in_range(repo_path, start_date, end_date)
+                if commits:
+                    commits_summary[name] = commits
+
+    # Build review content
+    month_name = start_date.strftime("%Y 年 %m 月")
+    lines = [
+        f"# 月回顧 {month_name}",
+        "",
+        f"**期間**: {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}",
+        f"**生成時間**: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "",
+        "## 專案進度總覽",
+        "",
+    ]
+
+    for proj in project_progress:
+        status_emoji = {
+            "active": "🟢",
+            "paused": "⏸️",
+            "completed": "✅",
+            "archived": "📦",
+        }.get(proj["status"], "❓")
+
+        tasks = proj["tasks"]
+        task_str = (
+            f"{tasks['completed']}/{tasks['total']} tasks" if tasks["total"] > 0 else "0 tasks"
+        )
+        commits_count = len(commits_summary.get(proj["name"].lower(), []))
+        commits_str = f", {commits_count} commits" if commits_count > 0 else ""
+
+        lines.append(f"- {status_emoji} **{proj['name']}**: {task_str}{commits_str}")
+
+    lines.append("")
+    lines.append("## 月度成就清單")
+    lines.append("")
+
+    if completed_tasks:
+        total_count = 0
+        for project, tasks in completed_tasks.items():
+            lines.append(f"### {project}")
+            for task in tasks:
+                lines.append(f"- [x] {task['text']}")
+                total_count += 1
+            lines.append("")
+        lines.append(f"**共完成 {total_count} 項任務**")
+    else:
+        lines.append("_本月沒有標記完成的任務_")
+
+    lines.append("")
+    lines.append("## 學習與成長")
+    lines.append("")
+    lines.append("<!-- 手動填寫本月學到的新技術、概念或技能 -->")
+    lines.append("- ")
+    lines.append("")
+    lines.append("## 下月目標")
+    lines.append("")
+    lines.append("<!-- 手動填寫下個月想要達成的目標 -->")
+    lines.append("- ")
+    lines.append("")
+
+    # Save to file
+    reviews_dir = _get_reviews_dir() / "monthly"
+    reviews_dir.mkdir(parents=True, exist_ok=True)
+    review_file = reviews_dir / f"{month_str}.md"
+    review_content = "\n".join(lines)
+    review_file.write_text(review_content, encoding="utf-8")
+
+    # Summary for response
+    total_tasks = sum(len(tasks) for tasks in completed_tasks.values())
+    total_commits = sum(len(commits) for commits in commits_summary.values())
+
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": f"""## 月回顧 {month_name} 已生成
+
+**統計**:
+- 追蹤專案: {len(project_progress)} 個
+- 完成任務: {total_tasks} 項
+- Git commits: {total_commits} 筆
+
+**檔案**: `{review_file}`
+
+請檢查並手動填寫「學習與成長」和「下月目標」區塊。""",
+            }
+        ],
+    }
+
+
 # 匯出所有工具，方便 agent.py 使用
-# 精簡版：移除 update_project_progress（改由 Skill 指引直接編輯）
 all_tools = [
     list_projects,
     show_project,
     get_today_tasks,
     sync_project,
+    weekly_review,
+    monthly_review,
 ]
 
 # 保留但不預設啟用的工具（可由 agent 按需加入）
