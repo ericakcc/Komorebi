@@ -367,6 +367,9 @@ class KomorebiAgent:
             # 檔案操作（用於 Skill 指引的任務編輯）
             "Read",
             "Edit",
+            # 網路搜尋（SDK 內建工具）
+            "WebSearch",
+            "WebFetch",
         ]
         if self.config.calendar.enabled:
             allowed_tools.extend(
