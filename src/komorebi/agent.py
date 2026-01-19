@@ -36,18 +36,35 @@ from rich.console import Console
 from rich.prompt import Confirm
 
 from .config import Config, load_config
+from .planner import PlanManager
 from .session import SessionManager
 from .skills import SkillManager, all_tools as skill_tools, set_skill_manager
 from .tools import calendar, memory, planning, project
 
-# Komorebi 專案根目錄
-_KOMOREBI_ROOT = Path(__file__).parent.parent.parent.resolve()
+# Komorebi 專案根目錄（由 KomorebiAgent.__init__ 設置）
+_komorebi_root: Path | None = None
+
+
+def set_komorebi_root(root: Path) -> None:
+    """設定 Komorebi 專案根目錄。"""
+    global _komorebi_root
+    _komorebi_root = root
+
 
 # Console for tool confirmation prompts
 _console = Console()
 
 # Logger for audit trail
 logger = logging.getLogger(__name__)
+
+# 模組級 PlanManager 引用（用於權限檢查）
+_plan_manager: PlanManager | None = None
+
+
+def set_plan_manager(manager: PlanManager) -> None:
+    """設定模組級的 PlanManager 引用。"""
+    global _plan_manager
+    _plan_manager = manager
 
 
 # ============================================================================
@@ -103,8 +120,8 @@ def format_tool_name(tool_name: str) -> str:
 # 需要確認的工具（寫入操作）
 _CONFIRM_TOOLS = {
     "mcp__project__sync_project",
+    "mcp__project__generate_review",
     "mcp__planning__plan_today",
-    "mcp__planning__end_of_day",
     "mcp__calendar__add_event",
 }
 
@@ -118,6 +135,7 @@ async def _check_tool_permission(
 
     確保 agent 不會修改其他專案資料夾。
     所有寫入操作只能在 Komorebi 專案內進行。
+    在 Plan Mode 下禁止所有寫入工具。
 
     Args:
         tool_name: 工具名稱
@@ -130,6 +148,14 @@ async def _check_tool_permission(
     # 審計日誌：記錄所有工具調用
     input_summary = {k: str(v)[:100] for k, v in input.items()}
     logger.info(f"Tool call: {tool_name} | Input: {input_summary}")
+
+    # Plan Mode 檢查：禁止寫入工具
+    if _plan_manager and _plan_manager.is_active:
+        if not _plan_manager.is_tool_allowed(tool_name):
+            return PermissionResultDeny(
+                behavior="deny",
+                message=_plan_manager.get_denial_message(tool_name),
+            )
 
     # MCP 工具：需要確認的工具先詢問用戶
     if tool_name.startswith("mcp__"):
@@ -182,9 +208,13 @@ async def _check_tool_permission(
     if tool_name in ["Edit", "Write"]:
         file_path = input.get("file_path", "")
 
+        # 如果沒有設定根目錄，允許所有操作（避免意外阻擋）
+        if not _komorebi_root:
+            return PermissionResultAllow(behavior="allow")
+
         # 只允許編輯 Komorebi 專案內的檔案
         allowed_prefixes = [
-            str(_KOMOREBI_ROOT) + "/",
+            str(_komorebi_root) + "/",
         ]
 
         path_allowed = any(file_path.startswith(p) for p in allowed_prefixes)
@@ -291,6 +321,14 @@ class KomorebiAgent:
         self._skill_manager.discover()
         set_skill_manager(self._skill_manager)
 
+        # 初始化 PlanManager
+        self._plan_manager = PlanManager(self.config.data_dir)
+        set_plan_manager(self._plan_manager)
+
+        # 設定 Komorebi 專案根目錄（用於權限檢查）
+        # data_dir 是 data/，其 parent 就是專案根目錄
+        set_komorebi_root(self.config.data_dir.parent)
+
         self._client: ClaudeSDKClient | None = None
         self._options: ClaudeAgentOptions = self._build_options()
 
@@ -376,13 +414,11 @@ class KomorebiAgent:
             "mcp__project__show_project",
             "mcp__project__get_today_tasks",
             "mcp__project__sync_project",
-            # 回顧系統
-            "mcp__project__weekly_review",
-            "mcp__project__monthly_review",
-            # 每日規劃
+            # 回顧系統（統一工具：day/week/month）
+            "mcp__project__generate_review",
+            # 每日規劃（移除 end_of_day，改用 generate_review period=day）
             "mcp__planning__plan_today",
             "mcp__planning__get_today",
-            "mcp__planning__end_of_day",
             "mcp__planning__log_event",
             # Skill 系統（LLM 自主判斷載入）
             "mcp__skill__load_skill",
@@ -569,3 +605,49 @@ class KomorebiAgent:
             True 如果是恢復上次的會話
         """
         return self._resume_session and self._session_id is not None
+
+    # ========================================================================
+    # Plan Mode
+    # ========================================================================
+
+    @property
+    def plan_mode(self) -> bool:
+        """檢查是否在 Plan Mode 中。"""
+        return self._plan_manager.is_active
+
+    @property
+    def plan_task(self) -> str | None:
+        """取得當前計劃的任務描述。"""
+        return self._plan_manager.current_task
+
+    @property
+    def plan_path(self) -> Path | None:
+        """取得當前計劃檔案路徑。"""
+        return self._plan_manager.current_plan_path
+
+    def enter_plan_mode(self, task: str) -> Path:
+        """進入 Plan Mode。
+
+        Args:
+            task: 任務描述
+
+        Returns:
+            計劃檔案路徑
+        """
+        return self._plan_manager.enter(task)
+
+    def approve_plan(self) -> str:
+        """批准計劃並退出 Plan Mode。
+
+        Returns:
+            結果訊息
+        """
+        return self._plan_manager.exit(approved=True)
+
+    def reject_plan(self) -> str:
+        """拒絕計劃並退出 Plan Mode。
+
+        Returns:
+            結果訊息
+        """
+        return self._plan_manager.exit(approved=False)

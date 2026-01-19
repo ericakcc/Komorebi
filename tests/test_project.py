@@ -1,6 +1,6 @@
 """Tests for project management tools.
 
-Tests the dual-mode (file and folder) project structure support.
+精簡版：只支援 folder mode（project/project.md + tasks.md）
 """
 
 import tempfile
@@ -13,7 +13,7 @@ from komorebi.tools import project
 
 @pytest.fixture
 def temp_data_dir():
-    """Create a temporary data directory with test projects."""
+    """Create a temporary data directory with test projects (folder mode only)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         data_dir = Path(tmpdir)
         projects_dir = data_dir / "projects"
@@ -50,17 +50,19 @@ Test project for unit tests.
 """
         )
 
-        # Create a file mode project (legacy)
-        (projects_dir / "legacyproject.md").write_text(
+        # Create another folder mode project
+        another_project = projects_dir / "anotherproject"
+        another_project.mkdir()
+        (another_project / "project.md").write_text(
             """---
-name: LegacyProject
+name: AnotherProject
 status: paused
 priority: 2
 ---
 
-# LegacyProject
+# AnotherProject
 
-Just a legacy file mode project.
+A paused project.
 """
         )
 
@@ -71,17 +73,7 @@ Just a legacy file mode project.
 
 
 class TestPathHelpers:
-    """Tests for dual-mode path helper functions."""
-
-    def test_is_folder_mode_true(self, temp_data_dir: Path) -> None:
-        """Test detection of folder mode project."""
-        assert project._is_folder_mode("testproject") is True
-        assert project._is_folder_mode("TestProject") is True  # Case insensitive
-
-    def test_is_folder_mode_false(self, temp_data_dir: Path) -> None:
-        """Test detection of file mode project."""
-        assert project._is_folder_mode("legacyproject") is False
-        assert project._is_folder_mode("nonexistent") is False
+    """Tests for path helper functions (folder mode only)."""
 
     def test_get_project_path_folder_mode(self, temp_data_dir: Path) -> None:
         """Test getting project path for folder mode."""
@@ -90,11 +82,11 @@ class TestPathHelpers:
         assert path.name == "project.md"
         assert path.parent.name == "testproject"
 
-    def test_get_project_path_file_mode(self, temp_data_dir: Path) -> None:
-        """Test getting project path for file mode."""
-        path = project._get_project_path("legacyproject")
+    def test_get_project_path_case_insensitive(self, temp_data_dir: Path) -> None:
+        """Test that project lookup is case insensitive."""
+        path = project._get_project_path("TestProject")
         assert path is not None
-        assert path.name == "legacyproject.md"
+        assert path.name == "project.md"
 
     def test_get_project_path_not_found(self, temp_data_dir: Path) -> None:
         """Test getting project path for non-existent project."""
@@ -107,9 +99,9 @@ class TestPathHelpers:
         assert path is not None
         assert path.name == "tasks.md"
 
-    def test_get_tasks_path_not_folder_mode(self, temp_data_dir: Path) -> None:
-        """Test getting tasks path for file mode project."""
-        path = project._get_tasks_path("legacyproject")
+    def test_get_tasks_path_not_exists(self, temp_data_dir: Path) -> None:
+        """Test getting tasks path when tasks.md doesn't exist."""
+        path = project._get_tasks_path("anotherproject")
         assert path is None
 
     def test_iter_all_projects(self, temp_data_dir: Path) -> None:
@@ -117,7 +109,7 @@ class TestPathHelpers:
         projects = project._iter_all_projects()
         names = [p[0] for p in projects]
         assert "testproject" in names
-        assert "legacyproject" in names
+        assert "anotherproject" in names
         assert len(projects) == 2
 
 
@@ -178,8 +170,8 @@ class TestListProjects:
     """Tests for list_projects tool."""
 
     @pytest.mark.asyncio
-    async def test_list_projects_both_modes(self, temp_data_dir: Path) -> None:
-        """Test listing projects in both modes."""
+    async def test_list_projects_shows_all(self, temp_data_dir: Path) -> None:
+        """Test listing all projects."""
         result = await project.list_projects.handler({})
 
         assert "is_error" not in result or result["is_error"] is False
@@ -187,11 +179,7 @@ class TestListProjects:
 
         # Should list both projects
         assert "TestProject" in text
-        assert "LegacyProject" in text
-
-        # Should show mode indicators
-        assert "📁" in text  # Folder mode
-        assert "📄" in text  # File mode
+        assert "AnotherProject" in text
 
     @pytest.mark.asyncio
     async def test_list_projects_shows_stats(self, temp_data_dir: Path) -> None:
@@ -199,7 +187,7 @@ class TestListProjects:
         result = await project.list_projects.handler({})
         text = result["content"][0]["text"]
 
-        # Should show task count for folder mode project
+        # Should show task count for project with tasks
         assert "tasks" in text or "%" in text
 
 
@@ -221,18 +209,6 @@ class TestShowProject:
         # Should include tasks.md content
         assert "tasks.md" in text
         assert "Task in progress" in text
-
-    @pytest.mark.asyncio
-    async def test_show_project_file_mode(self, temp_data_dir: Path) -> None:
-        """Test showing file mode project."""
-        result = await project.show_project.handler({"name": "legacyproject"})
-
-        assert "is_error" not in result or result["is_error"] is False
-        text = result["content"][0]["text"]
-
-        assert "LegacyProject" in text
-        # Should not include tasks.md reference
-        assert "tasks.md" not in text
 
     @pytest.mark.asyncio
     async def test_show_project_not_found(self, temp_data_dir: Path) -> None:
@@ -271,3 +247,41 @@ class TestGetTodayTasks:
 
         # Should indicate no @today tasks
         assert "沒有標記" in text or "沒有任何" in text
+
+
+class TestGenerateReview:
+    """Tests for generate_review tool."""
+
+    @pytest.mark.asyncio
+    async def test_generate_review_day_requires_plan(self, temp_data_dir: Path) -> None:
+        """generate_review day mode should fail without existing daily note."""
+        result = await project.generate_review.handler({"period": "day"})
+
+        assert result.get("is_error") is True
+        assert "找不到" in result["content"][0]["text"] or "plan_today" in result["content"][0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_generate_review_week_creates_file(self, temp_data_dir: Path) -> None:
+        """generate_review week mode should create review file."""
+        # Create reviews directory
+        reviews_dir = temp_data_dir / "reviews" / "weekly"
+        reviews_dir.mkdir(parents=True)
+
+        result = await project.generate_review.handler({"period": "week"})
+
+        assert result.get("is_error") is not True
+        text = result["content"][0]["text"]
+        assert "週回顧" in text
+
+    @pytest.mark.asyncio
+    async def test_generate_review_month_creates_file(self, temp_data_dir: Path) -> None:
+        """generate_review month mode should create review file."""
+        # Create reviews directory
+        reviews_dir = temp_data_dir / "reviews" / "monthly"
+        reviews_dir.mkdir(parents=True)
+
+        result = await project.generate_review.handler({"period": "month"})
+
+        assert result.get("is_error") is not True
+        text = result["content"][0]["text"]
+        assert "月回顧" in text

@@ -23,11 +23,12 @@ SdkMcpTool 的結構：
     result = await planning.plan_today.handler({"highlight": "Test"})
 
 這樣可以直接測試業務邏輯，不需要啟動 MCP server。
+
+注意：end_of_day 已整合到 project.py 的 generate_review(period="day")
 """
 
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -42,8 +43,10 @@ def temp_data_dir(tmp_path: Path) -> Path:
     projects_dir = tmp_path / "projects"
     projects_dir.mkdir()
 
-    # 建立測試專案
-    (projects_dir / "test-project.md").write_text(
+    # 建立測試專案（folder mode）
+    test_project = projects_dir / "test-project"
+    test_project.mkdir()
+    (test_project / "project.md").write_text(
         """---
 name: Test Project
 status: active
@@ -146,91 +149,43 @@ class TestGetToday:
         assert result.get("is_error") is not True
 
 
-class TestEndOfDay:
-    """Tests for end_of_day tool."""
+class TestLogEvent:
+    """Tests for log_event tool."""
 
     @pytest.mark.asyncio
-    async def test_end_of_day_requires_plan(self, temp_data_dir: Path) -> None:
-        """end_of_day should fail without existing plan."""
-        result = await planning.end_of_day.handler({})
-
-        assert result.get("is_error") is True
-        assert "plan_today" in result["content"][0]["text"]
-
-    @pytest.mark.asyncio
-    @patch("komorebi.tools.planning._get_today_commits")
-    async def test_end_of_day_scans_commits(
-        self, mock_commits: MagicMock, temp_data_dir: Path
-    ) -> None:
-        """end_of_day should scan git commits."""
-        mock_commits.return_value = ["feat: add feature (abc123)"]
-
-        await planning.plan_today.handler({"highlight": "Test"})
-        result = await planning.end_of_day.handler({"notes": "Good day"})
-
-        assert result.get("is_error") is not True
-        response_text = result["content"][0]["text"]
-        assert "日終回顧完成" in response_text
-
-    @pytest.mark.asyncio
-    async def test_end_of_day_updates_file(self, temp_data_dir: Path) -> None:
-        """end_of_day should update the daily note file."""
-        await planning.plan_today.handler({"highlight": "Test"})
-        await planning.end_of_day.handler({"notes": "Test note"})
-
-        today = datetime.now().strftime("%Y-%m-%d")
-        daily_file = temp_data_dir / "daily" / f"{today}.md"
-        content = daily_file.read_text(encoding="utf-8")
-
-        assert "Test note" in content
-        assert "Git Commits" in content
-
-
-class TestGetTodayCommits:
-    """Tests for _get_today_commits helper."""
-
-    @patch("subprocess.run")
-    def test_returns_commits(self, mock_run: MagicMock) -> None:
-        """Should return commit list from git log."""
-        mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout="feat: add feature (abc123)\nfix: bug fix (def456)",
+    async def test_log_event_creates_entry(self, temp_data_dir: Path) -> None:
+        """log_event should create event entry in daily note."""
+        result = await planning.log_event.handler(
+            {
+                "event_type": "decision",
+                "summary": "Test decision",
+                "details": "Some details",
+            }
         )
 
-        commits = planning._get_today_commits(Path("/fake/repo"))
+        assert result.get("is_error") is not True
+        assert "已記錄" in result["content"][0]["text"]
 
-        assert len(commits) == 2
-        assert "abc123" in commits[0]
-        assert "def456" in commits[1]
+        # Check file was created/updated
+        today = datetime.now().strftime("%Y-%m-%d")
+        daily_file = temp_data_dir / "daily" / f"{today}.md"
+        assert daily_file.exists()
 
-    @patch("subprocess.run")
-    def test_handles_empty_repo(self, mock_run: MagicMock) -> None:
-        """Should handle repo with no commits."""
-        mock_run.return_value = MagicMock(returncode=0, stdout="")
+        content = daily_file.read_text(encoding="utf-8")
+        assert "Test decision" in content
+        assert "Decision" in content
 
-        commits = planning._get_today_commits(Path("/fake/repo"))
+    @pytest.mark.asyncio
+    async def test_log_event_requires_summary(self, temp_data_dir: Path) -> None:
+        """log_event should fail without summary."""
+        result = await planning.log_event.handler(
+            {
+                "event_type": "milestone",
+            }
+        )
 
-        assert commits == []
-
-    @patch("subprocess.run")
-    def test_handles_git_error(self, mock_run: MagicMock) -> None:
-        """Should handle git command failure gracefully."""
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="error")
-
-        commits = planning._get_today_commits(Path("/fake/repo"))
-
-        assert commits == []
-
-    @patch("subprocess.run")
-    def test_handles_timeout(self, mock_run: MagicMock) -> None:
-        """Should handle subprocess timeout."""
-        import subprocess
-
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="git", timeout=10)
-
-        commits = planning._get_today_commits(Path("/fake/repo"))
-
-        assert commits == []
+        assert result.get("is_error") is True
+        assert "摘要" in result["content"][0]["text"]
 
 
 class TestHelperFunctions:
